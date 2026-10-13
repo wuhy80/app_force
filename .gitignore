@@ -1,0 +1,10 @@
+/bin/
+/frontend/node_modules/
+/frontend/dist/
+*.log
+.DS_Store
+/data/
+/output/
+/.playwright-cli/
+cache.db
+*.syso
