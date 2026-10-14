@@ -1,0 +1,101 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to publish, for example v0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]]
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build Windows x64 with frontend and embedded Agents
+        run: make windows
+      - name: Run host tests and static checks
+        run: |
+          make test
+          go vet -tags with_quic,with_utls,with_gvisor ./...
+      - name: Build Windows ARM64
+        run: |
+          GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath \
+            -tags desktop,production,with_quic,with_utls,with_gvisor \
+            -ldflags '-H windowsgui' -o bin/AppForce-arm64.exe ./cmd/appforce
+      - name: Compile Windows tests for both architectures
+        run: |
+          for task_arch in amd64 arm64; do
+            GOOS=windows GOARCH="$task_arch" CGO_ENABLED=0 go test -exec /usr/bin/true \
+              -tags desktop,production,with_quic,with_utls,with_gvisor ./...
+          done
+      - name: Package binaries, corresponding source and licenses
+        run: python3 scripts/package-windows.py --version "$RELEASE_TAG" --output output/release
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' > output/release-existing.txt 2> output/release-error.txt; then
+            if [[ "$(cat output/release-existing.txt)" != true ]]; then
+              echo 'This version is already published; refusing to replace release assets.' >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" output/release/assets/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "AppForce $RELEASE_TAG · Windows 桌面版" --notes-file output/release/release-notes.md
+          else
+            if ! grep -qi 'release not found' output/release-error.txt; then
+              cat output/release-error.txt >&2
+              exit 1
+            fi
+            gh release create "$RELEASE_TAG" output/release/assets/* --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --title "AppForce $RELEASE_TAG · Windows 桌面版" \
+              --notes-file output/release/release-notes.md
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > output/release/remote-release.json
+          python3 scripts/package-windows.py --verify-remote output/release/remote-release.json --output output/release
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-release-${{ env.RELEASE_TAG }}
+          path: |
+            output/release/assets/
+            output/release/release-notes.md
+            output/release/BUILD-INFO.json
+          if-no-files-found: ignore
+          retention-days: 14
