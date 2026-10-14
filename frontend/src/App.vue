@@ -28,7 +28,16 @@ const tunStackHints: Record<Settings['tun_stack'], string> = {
   system: '使用系统网络栈。Windows 需允许 AppForce 通过防火墙。',
 }
 function settingsDraft(value: Settings): Settings { return { ...value, tun_stack: value.tun_stack || 'gvisor' } }
-const latencies = ref<Record<string, string>>({}), testingNode = ref('')
+const latencies = ref<Record<string, string>>({})
+const testingSource = ref<{ id: string; total: number; completed: number }>()
+let probeGeneration = 0
+function cancelLatencyTests() {
+  probeGeneration++; testingSource.value = undefined
+  for (const id of Object.keys(latencies.value)) {
+    if (latencies.value[id] === '等待测试…' || latencies.value[id] === '测试中…') delete latencies.value[id]
+  }
+}
+watch(selectedDevice, cancelLatencyTests, { flush: 'sync' })
 const showDirectConnections = ref(localStorage.getItem('appforce-show-direct-connections') === 'true')
 watch(showDirectConnections, value => localStorage.setItem('appforce-show-direct-connections', String(value)))
 let poll: ReturnType<typeof setInterval> | undefined
@@ -169,11 +178,39 @@ async function changeRuleNode(rule: Rule, event: Event) {
 }
 async function deleteRule(rule: Rule) { await action(async () => { await request('DELETE', path(`rules/${rule.id}`)) }) }
 async function selectNode(node: Node) { await action(async () => { await request('PUT', path('nodes/selected'), { id: node.id }) }, `默认节点已设为 ${node.name}`) }
-async function testNode(node: Node) {
-  if (testingNode.value) return
-  testingNode.value = node.id
-  try { const result = await request<{ latency_ms: number }>('POST', path(`nodes/${node.id}/probe`)); latencies.value[node.id] = `${result.latency_ms} ms` }
-  catch (e) { latencies.value[node.id] = '不可用'; report(e) } finally { testingNode.value = '' }
+async function testSource(id: string) {
+  if (busy.value || testingSource.value || !state.value) return
+  const nodes = state.value.nodes.filter(node => node.source_id === id)
+  if (!nodes.length) return
+  const generation = ++probeGeneration
+  const basePath = path('nodes')
+  const sourceName = state.value.sources.find(source => source.id === id)?.name || '订阅'
+  testingSource.value = { id, total: nodes.length, completed: 0 }
+  error.value = ''; notice.value = ''
+  for (const node of nodes) latencies.value[node.id] = '等待测试…'
+  let next = 0, failed = 0
+  const worker = async () => {
+    while (generation === probeGeneration && next < nodes.length) {
+      const node = nodes[next++]!
+      latencies.value[node.id] = '测试中…'
+      try {
+        const result = await request<{ latency_ms: number }>('POST', `${basePath}/${node.id}/probe`)
+        if (generation !== probeGeneration) return
+        latencies.value[node.id] = `${result.latency_ms} ms`
+      } catch (e) {
+        if (generation !== probeGeneration) return
+        latencies.value[node.id] = '不可用'; failed++
+        if (e instanceof APIError && e.status === 401 && !selectedDevice.value) {
+          report(e); cancelLatencyTests(); return
+        }
+      }
+      if (testingSource.value) testingSource.value.completed++
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, nodes.length) }, worker))
+  if (generation !== probeGeneration) return
+  testingSource.value = undefined
+  notice.value = `${sourceName}：已测试全部 ${nodes.length} 个节点，${nodes.length - failed} 个可用，${failed} 个不可用`
 }
 async function importSubscription() {
   await action(async () => {
@@ -207,7 +244,7 @@ onMounted(async () => {
   await refresh(true)
   poll = setInterval(() => { if (!busy.value && !unauthorized.value) { void refresh(); if (page.value === 'logs') void loadLogs() } }, 3000)
 })
-onUnmounted(() => clearInterval(poll))
+onUnmounted(() => { clearInterval(poll); cancelLatencyTests() })
 </script>
 
 <template>
@@ -243,12 +280,22 @@ onUnmounted(() => clearInterval(poll))
           </template>
 
           <template v-if="page === 'nodes'">
-            <div class="page-title"><div><span class="eyebrow">PROXY NODES</span><h1>订阅与节点</h1><p>导入订阅，选择所有已启用程序使用的节点。</p></div><button class="primary" :disabled="busy" @click="showImport = true">＋ 添加订阅</button></div>
-            <section v-if="state.sources.length" class="sources"><div v-for="source in state.sources" :key="source.id" class="source-row"><span class="source-icon">◈</span><div class="source-name"><strong>{{ source.name }}</strong><small>{{ state.nodes.filter(n => n.source_id === source.id).length }} 个节点 · 更新于 {{ date(source.updated_at) }}<span v-if="source.warnings?.length"> · {{ source.warnings.length }} 条导入提示</span></small><details v-if="source.warnings?.length"><summary>查看导入提示</summary><p v-for="(w, i) in source.warnings" :key="i">{{ w }}</p></details></div><button v-if="source.url" class="text-button" :disabled="busy" @click="refreshSource(source.id)">更新</button><button class="text-button muted" :disabled="busy" @click="deleteSource(source.id)">删除</button></div></section>
+            <div class="page-title"><div><span class="eyebrow">PROXY NODES</span><h1>订阅与节点</h1><p>导入订阅并选择默认节点，程序可在“程序代理”中单独指定节点。</p></div><button class="primary" :disabled="busy || !!testingSource" @click="showImport = true">＋ 添加订阅</button></div>
+            <section v-if="state.sources.length" class="sources">
+              <div v-for="source in state.sources" :key="source.id" class="source-row">
+                <span class="source-icon">◈</span>
+                <div class="source-name"><strong>{{ source.name }}</strong><small>{{ state.nodes.filter(n => n.source_id === source.id).length }} 个节点 · 更新于 {{ date(source.updated_at) }}<span v-if="source.warnings?.length"> · {{ source.warnings.length }} 条导入提示</span></small><details v-if="source.warnings?.length"><summary>查看导入提示</summary><p v-for="(w, i) in source.warnings" :key="i">{{ w }}</p></details></div>
+                <div class="source-actions">
+                  <button class="text-button" :disabled="busy || !!testingSource || !state.nodes.some(n => n.source_id === source.id)" :aria-label="`测试 ${source.name} 的全部节点延迟`" @click="testSource(source.id)">{{ testingSource?.id === source.id ? `测试中 ${testingSource.completed}/${testingSource.total}` : '测延迟' }}</button>
+                  <button v-if="source.url" class="text-button" :disabled="busy || !!testingSource" @click="refreshSource(source.id)">更新</button>
+                  <button class="text-button muted" :disabled="busy || !!testingSource" @click="deleteSource(source.id)">删除</button>
+                </div>
+              </div>
+            </section>
             <div class="section-toolbar"><h2>节点 <span class="muted">{{ filteredNodes.length }}</span></h2><input v-model="nodeSearch" class="search-input" aria-label="搜索节点" placeholder="搜索节点、协议或服务器" /></div>
             <div v-if="!state.nodes.length" class="empty"><div class="empty-symbol">◈</div><h2>还没有代理节点</h2><p>支持 Clash YAML、sing-box JSON 和常见分享链接。</p><button class="secondary" @click="showImport = true">导入订阅</button></div>
-            <div v-else class="node-list"><div v-for="node in filteredNodes" :key="node.id" class="node-row" :class="{ selected: node.id === state.selected_node_id }"><button class="node-select" :disabled="busy" :aria-label="`选择 ${node.name}`" @click="selectNode(node)"><span class="radio" :class="{ checked: node.id === state.selected_node_id }"></span><span class="node-info"><strong>{{ node.name }}</strong><small class="mono">{{ node.server }}:{{ node.port }}</small></span></button><span class="protocol">{{ node.type }}</span><span class="latency">{{ testingNode === node.id ? '测试中…' : latencies[node.id] || '未测试' }}</span><button class="text-button" :disabled="!!testingNode" @click="testNode(node)">测延迟</button></div></div>
-            <div class="footnote"><span>ⓘ</span><p>延迟通过节点发起 HTTPS 请求测量。运行中切换节点会重新建立代理，现有连接可能中断。</p></div>
+            <div v-else class="node-list"><div v-for="node in filteredNodes" :key="node.id" class="node-row" :class="{ selected: node.id === state.selected_node_id }"><button class="node-select" :disabled="busy" :aria-label="`选择 ${node.name}`" @click="selectNode(node)"><span class="radio" :class="{ checked: node.id === state.selected_node_id }"></span><span class="node-info"><strong>{{ node.name }}</strong><small class="mono">{{ node.server }}:{{ node.port }}</small></span></button><span class="protocol">{{ node.type }}</span><span class="latency">{{ latencies[node.id] || '未测试' }}</span></div></div>
+            <div class="footnote"><span>ⓘ</span><p>订阅行的“测延迟”会测试该订阅的全部节点，搜索不会限制测试范围。延迟通过节点发起 HTTPS 请求测量。运行中切换节点会重新建立代理，现有连接可能中断。</p></div>
           </template>
 
           <template v-if="page === 'connections'">
