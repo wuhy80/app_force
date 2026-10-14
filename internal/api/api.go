@@ -136,6 +136,19 @@ func Handler(a *app.App) http.Handler {
 		}
 		result(w, a.SetSettings(settings))
 	})
+	mux.HandleFunc("PUT /api/startup", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if !read(w, r, &body) {
+			return
+		}
+		if body.Enabled == nil {
+			fail(w, fmt.Errorf("必须指定是否启用开机自动启动"))
+			return
+		}
+		result(w, a.Startup.SetEnabled(*body.Enabled))
+	})
 	mux.HandleFunc("POST /api/rules", func(w http.ResponseWriter, r *http.Request) {
 		var rule model.Rule
 		if !read(w, r, &rule) {

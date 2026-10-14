@@ -10,6 +10,7 @@ export interface Connection { id: string; network: string; destination: string; 
 export interface State {
   version: string; hostname: string; os: string; nodes: Node[]; sources: Source[]; rules: Rule[]; devices: Device[];
   selected_node_id: string; settings: Settings;
+  startup: { supported: boolean; enabled: boolean; error?: string };
   engine: { running: boolean; mode: string; started_at: string | null; error: string; upload: number; download: number; connections: Connection[] }
 }
 export interface Process { pid: number; parent_pid: number; name: string; path: string; selectable: boolean }

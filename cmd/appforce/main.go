@@ -18,6 +18,7 @@ import (
 	"appforce/internal/app"
 	"appforce/internal/deploy"
 	"appforce/internal/security"
+	"appforce/internal/startup"
 	"github.com/gofrs/flock"
 )
 
@@ -37,6 +38,10 @@ func main() {
 	pairingInfo := flag.Bool("pairing-info", false, "为自动部署准备证书并输出管理凭据 JSON")
 	verifyAgent := flag.Bool("verify-agent", false, "验证本机 HTTPS Agent 已启动并退出")
 	flag.Parse()
+	*data, err = filepath.Abs(*data)
+	if err != nil {
+		log.Fatal(err)
+	}
 	a, err := app.Open(*data)
 	if err != nil {
 		log.Fatal(err)
@@ -98,6 +103,23 @@ func main() {
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Fatal(err)
+	}
+	startupArgs := []string{"--data", *data, "--listen", *listen}
+	if *headless {
+		startupArgs = append(startupArgs, "--headless")
+	}
+	for _, option := range []struct{ name, value string }{{"--tls-cert", *cert}, {"--tls-key", *key}} {
+		if option.value != "" {
+			absolute, pathErr := filepath.Abs(option.value)
+			if pathErr != nil {
+				log.Fatal(pathErr)
+			}
+			startupArgs = append(startupArgs, option.name, absolute)
+		}
+	}
+	a.Startup = startup.New(startupArgs)
+	if status := a.Startup.Status(); status.Error != "" {
+		log.Printf("读取开机自动启动设置失败: %s", status.Error)
 	}
 	server := &http.Server{Handler: api.Handler(a), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 65 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

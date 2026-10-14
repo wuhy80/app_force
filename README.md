@@ -54,6 +54,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
 关闭窗口会隐藏到托盘，本机代理继续运行。通过托盘“退出 AppForce”停止本机代理并退出。托盘始终操作本机，界面切换到远程设备后也一样。图标被 Windows 收入隐藏区域时，可从通知区域的展开按钮找到它。Explorer 重启后自动恢复图标；托盘初始化或恢复失败时显示错误并恢复窗口，关闭窗口将正常退出。
 
+在本机“代理设置”中可开启“随 Windows 启动”，默认关闭，切换后立即保存。开启后，通过当前用户的 Windows 任务计划在每次登录时以管理员权限启动 AppForce；关闭后移除对应任务。该开关只启动应用，代理仍由“启动代理”控制。启动任务保留当前配置目录、监听地址和 HTTPS 参数；移动 EXE 后请重新关闭、开启此选项以更新路径。远程设备、Linux/macOS 不显示此开关。
+
 桌面窗口依赖 Windows WebView2 Runtime。Windows 11 通常已安装；缺少该系统运行时的 Windows 10 需要先安装。应用本身为单个 EXE。
 
 从 macOS/Linux 交叉编译 Windows amd64：

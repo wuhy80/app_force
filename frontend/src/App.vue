@@ -228,6 +228,12 @@ async function deleteSource(id: string) {
   await action(async () => { await request('DELETE', path(`sources/${id}`)) })
 }
 async function saveSettings() { await action(async () => { await request('PUT', path('settings'), settings.value) }, '代理设置已保存') }
+async function toggleStartup(event: Event) {
+  const input = event.target as HTMLInputElement
+  const enabled = input.checked
+  await action(async () => { await request('PUT', '/api/startup', { enabled }) }, enabled ? '已开启随 Windows 启动' : '已关闭随 Windows 启动')
+  input.checked = !!local.value?.startup?.enabled
+}
 async function saveDevice() {
   await action(async () => { await request('POST', '/api/devices', deviceDraft.value); showDeviceForm.value = false; deviceDraft.value = { id: '', name: '', url: 'https://', token: '', certificate_sha256: '' } }, '设备已添加，可从左上角切换')
 }
@@ -318,6 +324,7 @@ onUnmounted(() => { clearInterval(poll); cancelLatencyTests() })
           <template v-if="page === 'settings' && settings">
             <div class="page-title"><div><span class="eyebrow">ENGINE SETTINGS</span><h1>代理设置</h1><p>设置 {{ deviceLabel }} 的代理模式、网络栈与 DNS 行为。</p></div><button class="primary" :disabled="busy" @click="saveSettings">保存设置</button></div>
             <div class="settings-list">
+              <div v-if="!selectedDevice && state.os === 'windows' && state.startup?.supported" class="setting-row"><div><h2>随 Windows 启动</h2><p>默认关闭。开启后，每次登录 Windows 自动启动 AppForce；切换后立即保存。</p><p v-if="state.startup.error" role="alert">{{ state.startup.error }}</p></div><input type="checkbox" :checked="state.startup.enabled" :disabled="busy" aria-label="随 Windows 启动" @change="toggleStartup" /></div>
               <div class="setting-row"><div><h2>代理模式</h2><p>透明代理按程序转发；本地代理供应用自行配置。</p></div><select v-model="settings.mode"><option value="tun">透明代理 · TUN</option><option value="mixed">本地代理 · SOCKS / HTTP</option></select></div>
               <div v-if="settings.mode === 'tun'" class="setting-row"><div><h2>TUN 网络栈</h2><p>{{ tunStackHints[settings.tun_stack] }}</p></div><select v-model="settings.tun_stack" :disabled="busy" aria-label="TUN 网络栈"><option value="gvisor">gVisor · 虚拟栈（默认）</option><option value="mixed">Mixed · 混合栈</option><option value="system">System · 系统栈</option></select></div>
               <div class="setting-row"><div><h2>本地代理端口</h2><p>仅监听 127.0.0.1。</p></div><input v-model.number="settings.mixed_port" type="number" min="1024" max="65535" aria-label="本地代理端口" /></div>

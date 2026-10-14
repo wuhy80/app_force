@@ -16,6 +16,7 @@ import (
 	"appforce/internal/deploy"
 	"appforce/internal/engine"
 	"appforce/internal/model"
+	"appforce/internal/startup"
 	"appforce/internal/store"
 	"appforce/internal/subscription"
 	"appforce/internal/traffic"
@@ -28,6 +29,7 @@ type App struct {
 	Engine   engine.Engine
 	Token    string
 	Deployer *deploy.Manager
+	Startup  *startup.Manager
 }
 
 type Snapshot struct {
@@ -41,6 +43,7 @@ type Snapshot struct {
 	SelectedNodeID string           `json:"selected_node_id"`
 	Settings       model.Settings   `json:"settings"`
 	Engine         engine.Status    `json:"engine"`
+	Startup        startup.Status   `json:"startup"`
 }
 
 func Open(dir string) (*App, error) {
@@ -89,7 +92,7 @@ func (a *App) Snapshot() Snapshot {
 		}
 	}
 	hostname, _ := os.Hostname()
-	return Snapshot{model.Version, hostname, runtime.GOOS, nodes, sources, rules, devices, a.config.SelectedNodeID, a.config.Settings, a.Engine.Snapshot()}
+	return Snapshot{model.Version, hostname, runtime.GOOS, nodes, sources, rules, devices, a.config.SelectedNodeID, a.config.Settings, a.Engine.Snapshot(), a.Startup.Status()}
 }
 
 // applyLocked applies a running configuration transactionally, restoring the prior engine on failure.
