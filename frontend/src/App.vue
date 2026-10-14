@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { APIError, desktop, request, setToken, type DeploymentJob, type Device, type LogEntry, type Node, type Process, type ProgramDirectory, type Rule, type Settings, type State } from './api'
-import { plainLogText } from './log'
+import { formatLogMessage, formatLogTime, plainLogText } from './log'
 import TrafficPage from './TrafficPage.vue'
 import DeploymentForm from './DeploymentForm.vue'
 import ThirdPartyAppsPage from './ThirdPartyAppsPage.vue'
@@ -332,7 +332,7 @@ onUnmounted(() => { clearInterval(poll); cancelLatencyTests() })
           <template v-if="page === 'logs'">
             <div class="page-title"><div><span class="eyebrow">ENGINE LOG</span><h1>运行日志</h1><p>最近 250 条内核日志，仅保存在内存中。</p></div><button class="secondary" @click="loadLogs">刷新</button></div>
             <div v-if="!logs.length" class="empty"><div class="empty-symbol">≡</div><h2>暂无日志</h2><p>启动代理后显示内核运行信息。</p></div>
-            <div v-else class="log-view"><div v-for="(entry, i) in logs" :key="i" class="log-line"><time>{{ new Date(entry.time).toLocaleTimeString('zh-CN') }}</time><span>{{ plainLogText(entry.level) }}</span><code>{{ plainLogText(entry.message) }}</code></div></div>
+            <div v-else class="log-view"><div v-for="(entry, i) in logs" :key="i" class="log-line"><time :datetime="entry.time">{{ formatLogTime(entry.time) }}</time><span>{{ plainLogText(entry.level) }}</span><code>{{ formatLogMessage(entry.message) }}</code></div></div>
           </template>
         </template>
       </div>
