@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"appforce/internal/model"
+	"appforce/internal/traffic"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/common/urltest"
@@ -79,6 +80,10 @@ type Engine struct {
 	status          Status
 	Logs            Logs
 	CachePath       string
+	Recorder        *traffic.Recorder
+	tracker         *traffic.Tracker
+	samplingStop    chan struct{}
+	samplingDone    chan struct{}
 }
 
 func (e *Engine) Start(c model.Config) error {
@@ -103,6 +108,10 @@ func (e *Engine) Start(c model.Config) error {
 	opts.Experimental = &option.ExperimentalOptions{CacheFile: &option.CacheFileOptions{Path: e.CachePath}}
 	instance, err := box.New(box.Options{Options: opts, Context: ctx, PlatformLogWriter: &e.Logs})
 	if err == nil {
+		if e.Recorder != nil {
+			e.tracker = traffic.NewTracker(e.Recorder, c.Rules)
+			instance.Router().AppendTracker(e.tracker)
+		}
 		err = instance.Start()
 	}
 	if err != nil {
@@ -110,6 +119,11 @@ func (e *Engine) Start(c model.Config) error {
 			_ = instance.Close()
 		}
 		cancel()
+		if e.tracker != nil {
+			e.tracker.Close()
+			e.tracker = nil
+			_ = e.Recorder.Flush()
+		}
 		e.status.Error = fmt.Sprintf("代理启动失败: %v", err)
 		return fmt.Errorf("%s", e.status.Error)
 	}
@@ -128,6 +142,10 @@ func (e *Engine) Start(c model.Config) error {
 	}
 	now := time.Now()
 	e.status = Status{Running: true, Mode: c.Settings.Mode, StartedAt: &now}
+	if e.Recorder != nil {
+		e.samplingStop, e.samplingDone = make(chan struct{}), make(chan struct{})
+		go e.sampleTraffic(e.samplingStop, e.samplingDone)
+	}
 	return nil
 }
 
@@ -136,17 +154,55 @@ func (e *Engine) Stop() error {
 	defer e.mu.Unlock()
 	if e.instance == nil {
 		e.status.Running = false
+		if e.Recorder != nil {
+			e.flushTraffic()
+		}
 		return nil
+	}
+	if e.samplingStop != nil {
+		close(e.samplingStop)
+		<-e.samplingDone
+		e.samplingStop, e.samplingDone = nil, nil
 	}
 	err := e.instance.Close()
 	e.cancel()
 	e.instance, e.traffic, e.cancel = nil, nil, nil
 	e.nodesByOutbound = nil
 	e.status = Status{}
+	if e.tracker != nil {
+		e.tracker.Close()
+		e.tracker = nil
+		e.flushTraffic()
+	}
 	if err != nil {
 		e.status.Error = err.Error()
 	}
 	return err
+}
+
+func (e *Engine) flushTraffic() {
+	if err := e.Recorder.Flush(); err != nil {
+		e.Logs.WriteMessage(log.LevelError, fmt.Sprintf("保存流量历史失败: %v", err))
+	}
+}
+
+func (e *Engine) sampleTraffic(stop, done chan struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	ticks := 0
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			e.Recorder.Sample()
+			ticks++
+			if ticks%5 == 0 {
+				_ = e.Recorder.Flush()
+			}
+		}
+	}
 }
 
 func (e *Engine) Snapshot() Status {

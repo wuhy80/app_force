@@ -13,6 +13,16 @@ export interface Process { pid: number; parent_pid: number; name: string; path: 
 export interface ProgramEntry { name: string; path: string; directory: boolean }
 export interface ProgramDirectory { directory: string; parent: string; entries: ProgramEntry[] }
 export interface LogEntry { time: string; level: string; message: string }
+export interface TrafficMetrics {
+  upload: number; download: number; lifetime_upload: number; lifetime_download: number;
+  upload_rate: number; download_rate: number; active_connections: number;
+}
+export interface TrafficApplication extends TrafficMetrics { id: string; name: string; path: string }
+export interface TrafficReport {
+  generated_at: string; collected_since: string; saved_at: string | null; storage_error: string;
+  days: number; include_direct: boolean; applications: TrafficApplication[]; summary: TrafficMetrics;
+  history: { date: string; upload: number; download: number }[];
+}
 
 declare global {
   interface Window { go?: { main?: { Desktop?: {

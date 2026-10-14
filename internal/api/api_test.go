@@ -149,6 +149,10 @@ func TestPinnedRemoteDeviceManagement(t *testing.T) {
 	if strings.Contains(w.Body.String(), remote.Token) {
 		t.Fatal("remote token exposed")
 	}
+	w = call(localHandler, "GET", prefix+"traffic?days=30&include_direct=true", local.Token, "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"days":30`) || !strings.Contains(w.Body.String(), `"include_direct":true`) {
+		t.Fatalf("remote traffic unavailable: %s", w.Body.String())
+	}
 	programDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(programDir, "remote-program.exe"), []byte("fixture"), 0755); err != nil {
 		t.Fatal(err)

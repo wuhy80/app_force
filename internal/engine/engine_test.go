@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"appforce/internal/model"
+	"appforce/internal/traffic"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/option"
@@ -140,7 +141,12 @@ func TestEmbeddedCoreActuallyForwardsAndReportsTraffic(t *testing.T) {
 	c.SelectedNodeID = node.ID
 	c.Settings.Mode = "mixed"
 	c.Settings.MixedPort = freePort(t)
-	e := &Engine{CachePath: filepath.Join(t.TempDir(), "cache.db")}
+	dir := t.TempDir()
+	recorder, err := traffic.Open(filepath.Join(dir, "traffic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{CachePath: filepath.Join(dir, "cache.db"), Recorder: recorder}
 	if err := e.Start(c); err != nil {
 		t.Fatal(err)
 	}
@@ -170,14 +176,61 @@ func TestEmbeddedCoreActuallyForwardsAndReportsTraffic(t *testing.T) {
 	if len(status.Connections) == 0 || status.Connections[0].Node == nil || status.Connections[0].Node.ID != node.ID || status.Connections[0].Node.Server != node.Server {
 		t.Fatalf("running connection is missing its actual node: %+v", status.Connections)
 	}
+	report, err := recorder.Report(7, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.Upload != status.Upload || report.Summary.Download != status.Download || len(report.Applications) != 1 || report.Applications[0].Name != "本地代理（未识别应用）" {
+		t.Fatalf("application tracker disagrees with core: %+v vs %+v", report, status)
+	}
+	// Sampling/persistence must run even when no client requests the statistics page.
+	deadline := time.Now().Add(7 * time.Second)
+	for {
+		automatic, err := traffic.Open(filepath.Join(dir, "traffic.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		persisted, err := automatic.Report(7, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if persisted.Summary.Download >= report.Summary.Download {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("traffic was not automatically persisted")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err := e.Stop(); err != nil {
 		t.Fatal(err)
 	}
 	if e.Snapshot().Running {
 		t.Fatal("engine still running")
 	}
+	reopened, err := traffic.Open(filepath.Join(dir, "traffic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := reopened.Report(7, "", false)
+	if err != nil || saved.Summary.Download < report.Summary.Download || saved.Summary.ActiveConnections != 0 {
+		t.Fatalf("stop did not persist final counters: %+v %v", saved, err)
+	}
 	if err := e.Start(c); err != nil {
 		t.Fatalf("restart failed: %v", err)
+	}
+	resp, err = client.Get(target.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := recorder.Report(7, "", false)
+	if err != nil || continued.Summary.Download <= saved.Summary.Download {
+		t.Fatalf("restart reset history: %+v %v", continued, err)
 	}
 }
 

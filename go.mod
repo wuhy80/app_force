@@ -4,8 +4,10 @@ go 1.25.5
 
 require (
 	github.com/gofrs/flock v0.12.1
+	github.com/sagernet/bbolt v0.0.0-20260915102804-500ee1e84832
 	github.com/sagernet/sing v0.9.7-0.20260929150544-0ad23b637bd4
 	github.com/sagernet/sing-box v1.14.3
+	github.com/sagernet/sing-tun v0.9.7-0.20261009020158-bca4bf029237
 	github.com/shirou/gopsutil/v3 v3.23.12
 	github.com/tc-hib/winres v0.3.1
 	github.com/wailsapp/wails/v2 v2.16.0
@@ -110,7 +112,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/safchain/ethtool v0.3.0 // indirect
-	github.com/sagernet/bbolt v0.0.0-20260915102804-500ee1e84832 // indirect
 	github.com/sagernet/cors v1.2.1 // indirect
 	github.com/sagernet/cronet-go v0.0.0-20260912104727-0d28acc44093 // indirect
 	github.com/sagernet/cronet-go/all v0.0.0-20260912104727-0d28acc44093 // indirect
@@ -158,7 +159,6 @@ require (
 	github.com/sagernet/sing-shadowsocks2 v0.2.2-0.20260929152114-a69d1086332b // indirect
 	github.com/sagernet/sing-shadowtls v0.2.2-0.20260928201441-a9c0127d5c99 // indirect
 	github.com/sagernet/sing-snell v0.0.0-20260904135315-bc5a12ac736f // indirect
-	github.com/sagernet/sing-tun v0.9.7-0.20261009020158-bca4bf029237 // indirect
 	github.com/sagernet/sing-usbip v0.0.0-20260817040617-28bd42667eca // indirect
 	github.com/sagernet/sing-vmess v0.2.9-0.20260929152519-9b95ab8c9478 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect

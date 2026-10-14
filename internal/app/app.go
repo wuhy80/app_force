@@ -17,6 +17,7 @@ import (
 	"appforce/internal/model"
 	"appforce/internal/store"
 	"appforce/internal/subscription"
+	"appforce/internal/traffic"
 )
 
 type App struct {
@@ -45,7 +46,21 @@ func Open(dir string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{store: s, config: c, Token: token, Engine: engine.Engine{CachePath: filepath.Join(dir, "engine-cache.db")}}, nil
+	recorder, err := traffic.Open(filepath.Join(dir, "traffic.db"))
+	if err != nil {
+		return nil, err
+	}
+	a := &App{store: s, config: c, Token: token, Engine: engine.Engine{CachePath: filepath.Join(dir, "engine-cache.db"), Recorder: recorder}}
+	return a, nil
+}
+
+func (a *App) Traffic(days int, appID string, includeDirect bool) (traffic.Report, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, rule := range a.config.Rules {
+		a.Engine.Recorder.Register(rule.Name, rule.Path)
+	}
+	return a.Engine.Recorder.Report(days, appID, includeDirect)
 }
 
 func (a *App) Snapshot() Snapshot {

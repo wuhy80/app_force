@@ -2,11 +2,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { APIError, desktop, request, setToken, type Device, type LogEntry, type Node, type Process, type ProgramDirectory, type Rule, type Settings, type State } from './api'
 import { plainLogText } from './log'
+import TrafficPage from './TrafficPage.vue'
 
-type Page = 'programs' | 'nodes' | 'connections' | 'devices' | 'settings' | 'logs'
+type Page = 'programs' | 'nodes' | 'connections' | 'traffic' | 'devices' | 'settings' | 'logs'
 const pages: { id: Page; label: string; icon: string }[] = [
   { id: 'programs', label: '程序代理', icon: '▦' }, { id: 'nodes', label: '订阅与节点', icon: '◈' },
-  { id: 'connections', label: '实时连接', icon: '⇄' },
+  { id: 'connections', label: '实时连接', icon: '⇄' }, { id: 'traffic', label: '流量统计', icon: '▥' },
   { id: 'devices', label: '设备管理', icon: '▣' },
   { id: 'settings', label: '代理设置', icon: '⚙' }, { id: 'logs', label: '运行日志', icon: '≡' },
 ]
@@ -221,6 +222,7 @@ onUnmounted(() => clearInterval(poll))
         <div v-else-if="!state" class="empty"><h2>设备暂时不可用</h2><p>检查设备上的 AppForce 是否运行。</p><button class="secondary" @click="refresh(true)">重新连接</button></div>
 
         <template v-else>
+          <TrafficPage v-if="page === 'traffic'" :key="selectedDevice" :endpoint="path('traffic')" :running="state.engine.running" @error="report" />
           <template v-if="page === 'programs'">
             <div class="page-title"><div><span class="eyebrow">APPLICATION ROUTING</span><h1>程序代理<span class="title-count">{{ state.rules.length }}</span></h1><p>为每个程序选择节点，未指定时跟随默认节点。</p></div><button class="primary" :disabled="busy" @click="openPicker"><span>＋</span> 添加程序</button></div>
             <section class="engine-strip"><div class="engine-status"><span class="status-orbit" :class="{ running: state.engine.running }"><span></span></span><div><strong>{{ state.engine.running ? '代理已启动' : '准备就绪' }}</strong><p>{{ state.engine.running ? (state.engine.mode === 'tun' ? '所选程序代理 · 其他程序直连' : '本地 SOCKS / HTTP 代理') : '启动后应用已保存的程序规则' }}</p></div></div><div class="selected-node"><span class="eyebrow">默认节点</span><button @click="choosePage('nodes')">{{ currentNode?.name || '选择一个节点' }} <span>↗</span></button><small>{{ currentNode?.type.toUpperCase() || '尚未导入订阅' }}</small></div><button :class="state.engine.running ? 'secondary stop-button' : 'primary'" :disabled="busy || (!state.engine.running && !currentNode)" @click="toggleEngine">{{ busy ? '处理中…' : state.engine.running ? '停止代理' : '启动代理' }}</button></section>

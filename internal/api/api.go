@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,32 @@ import (
 func Handler(a *app.App) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) { send(w, a.Snapshot()) })
+	mux.HandleFunc("GET /api/traffic", func(w http.ResponseWriter, r *http.Request) {
+		days := 7
+		query := r.URL.Query()
+		if raw := query.Get("days"); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 1 || value > 365 {
+				fail(w, fmt.Errorf("统计天数应在 1 到 365 之间"))
+				return
+			}
+			days = value
+		}
+		includeDirect := false
+		if raw := query.Get("include_direct"); raw != "" {
+			if raw != "true" && raw != "false" {
+				fail(w, fmt.Errorf("include_direct 必须为 true 或 false"))
+				return
+			}
+			includeDirect = raw == "true"
+		}
+		report, err := a.Traffic(days, query.Get("app"), includeDirect)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		send(w, report)
+	})
 	mux.HandleFunc("GET /api/programs", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
