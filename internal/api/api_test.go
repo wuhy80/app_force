@@ -7,12 +7,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"appforce/internal/app"
 	"appforce/internal/model"
+	"appforce/internal/program"
 )
 
 func setup(t *testing.T) (*app.App, http.Handler) {
@@ -34,10 +37,65 @@ func call(handler http.Handler, method, path, token, body string) *httptest.Resp
 	return w
 }
 
+func TestTUNStackSettingsSaveAndLegacyRequests(t *testing.T) {
+	a, handler := setup(t)
+	initial := a.Snapshot().Settings
+	if initial.TUNStack != "gvisor" {
+		t.Fatalf("new settings do not default to gVisor: %+v", initial)
+	}
+	for _, choice := range []string{"system", "mixed", "gvisor", ""} {
+		settings := initial
+		settings.TUNStack = choice
+		body, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if choice == "" {
+			// Older clients send settings without the new field.
+			var legacy map[string]any
+			if err := json.Unmarshal(body, &legacy); err != nil {
+				t.Fatal(err)
+			}
+			delete(legacy, "tun_stack")
+			body, err = json.Marshal(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.TUNStack = "gvisor"
+		}
+		w := call(handler, "PUT", "/api/settings", a.Token, string(body))
+		if w.Code != http.StatusOK {
+			t.Fatalf("could not save stack %q: %s", choice, w.Body.String())
+		}
+		w = call(handler, "GET", "/api/state", a.Token, "")
+		var state app.Snapshot
+		if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || state.Settings != settings {
+			t.Fatalf("settings response did not retain stack %q: %+v", choice, state.Settings)
+		}
+	}
+	before := a.Snapshot().Settings
+	invalid := before
+	invalid.TUNStack = "unsupported"
+	body, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := call(handler, "PUT", "/api/settings", a.Token, string(body))
+	if w.Code != http.StatusBadRequest || a.Snapshot().Settings != before {
+		t.Fatalf("invalid stack was accepted or changed saved settings: %s", w.Body.String())
+	}
+}
+
 func TestAuthenticationOriginAndSecretRedaction(t *testing.T) {
 	a, handler := setup(t)
 	if call(handler, "GET", "/api/state", "", "").Code != 401 {
 		t.Fatal("unauthenticated API accessible")
+	}
+	if call(handler, "GET", "/api/programs", "", "").Code != 401 {
+		t.Fatal("unauthenticated program browsing accessible")
 	}
 	req := httptest.NewRequest("POST", "/api/engine/start", nil)
 	req.Header.Set("Authorization", "Bearer "+a.Token)
@@ -91,6 +149,14 @@ func TestPinnedRemoteDeviceManagement(t *testing.T) {
 	if strings.Contains(w.Body.String(), remote.Token) {
 		t.Fatal("remote token exposed")
 	}
+	programDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(programDir, "remote-program.exe"), []byte("fixture"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	w = call(localHandler, "GET", prefix+"programs?directory="+url.QueryEscape(programDir), local.Token, "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "remote-program.exe") {
+		t.Fatalf("remote program browsing failed: %s", w.Body.String())
+	}
 	if call(localHandler, "GET", prefix+"devices", local.Token, "").Code != 400 {
 		t.Fatal("nested pairing route accessible")
 	}
@@ -112,6 +178,50 @@ func TestPinnedRemoteDeviceManagement(t *testing.T) {
 	body, _ = json.Marshal(d)
 	if call(localHandler, "POST", "/api/devices", local.Token, string(body)).Code != 400 {
 		t.Fatal("plaintext remote management accepted")
+	}
+}
+
+func TestBrowseAndSaveProgramThatIsNotRunning(t *testing.T) {
+	dir := t.TempDir()
+	programDir := t.TempDir()
+	programPath := filepath.Join(programDir, "not-running.exe")
+	if err := os.WriteFile(programPath, []byte("fixture"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := app.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	handler := Handler(a)
+	w := call(handler, "GET", "/api/programs?directory="+url.QueryEscape(programDir), a.Token, "")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	var listing program.Listing
+	if err := json.Unmarshal(w.Body.Bytes(), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Entries) != 1 || listing.Entries[0].Path != programPath {
+		t.Fatalf("stopped program was not selectable: %+v", listing)
+	}
+	body, _ := json.Marshal(model.Rule{Path: listing.Entries[0].Path, Enabled: true})
+	w = call(handler, "POST", "/api/rules", a.Token, string(body))
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	reopened, err := app.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Stop() })
+	rules := reopened.Snapshot().Rules
+	resolved, err := filepath.EvalSymlinks(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Path != resolved || !rules[0].Enabled {
+		t.Fatalf("program rule did not survive restart: %+v", rules)
 	}
 }
 

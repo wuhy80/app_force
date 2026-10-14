@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,7 +27,12 @@ type Logs struct {
 	entries []LogEntry
 }
 
+// sing-box's platform formatter emits ANSI codes independently of its console settings.
+// Also accept the visible ESC symbol used when control characters are rendered as text.
+var logControlCodes = regexp.MustCompile(`(?:\x1b|\x{241b})\[[0-?]*[ -/]*[@-~]`)
+
 func (l *Logs) WriteMessage(level log.Level, message string) {
+	message = logControlCodes.ReplaceAllString(message, "")
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entries = append(l.entries, LogEntry{time.Now(), log.FormatLevel(level), message})
@@ -41,14 +48,16 @@ func (l *Logs) Entries() []LogEntry {
 }
 
 type Connection struct {
-	ID          string `json:"id"`
-	Network     string `json:"network"`
-	Destination string `json:"destination"`
-	ProcessPath string `json:"process_path"`
-	PID         uint32 `json:"pid"`
-	Proxied     bool   `json:"proxied"`
-	Upload      int64  `json:"upload"`
-	Download    int64  `json:"download"`
+	ID          string          `json:"id"`
+	Network     string          `json:"network"`
+	Destination string          `json:"destination"`
+	ProcessPath string          `json:"process_path"`
+	PID         uint32          `json:"pid"`
+	Proxied     bool            `json:"proxied"`
+	Outbound    string          `json:"outbound"`
+	Node        *model.NodeView `json:"node,omitempty"`
+	Upload      int64           `json:"upload"`
+	Download    int64           `json:"download"`
 }
 
 type Status struct {
@@ -62,13 +71,14 @@ type Status struct {
 }
 
 type Engine struct {
-	mu        sync.Mutex
-	instance  *box.Box
-	traffic   *trafficcontrol.Manager
-	cancel    context.CancelFunc
-	status    Status
-	Logs      Logs
-	CachePath string
+	mu              sync.Mutex
+	instance        *box.Box
+	traffic         *trafficcontrol.Manager
+	nodesByOutbound map[string]model.NodeView
+	cancel          context.CancelFunc
+	status          Status
+	Logs            Logs
+	CachePath       string
 }
 
 func (e *Engine) Start(c model.Config) error {
@@ -105,6 +115,17 @@ func (e *Engine) Start(c model.Config) error {
 	}
 	e.instance, e.cancel = instance, cancel
 	e.traffic = service.PtrFromContext[trafficcontrol.Manager](ctx)
+	// Keep node details tied to this running instance, not to later saved selections.
+	e.nodesByOutbound = make(map[string]model.NodeView)
+	nodes, _ := outboundNodes(c) // Build already validated every active node.
+	for _, node := range nodes {
+		e.nodesByOutbound[nodeTag(c, node.ID)] = node.View()
+	}
+	for _, inbound := range opts.Inbounds {
+		if tun, ok := inbound.Options.(*option.TunInboundOptions); ok {
+			e.Logs.WriteMessage(log.LevelInfo, fmt.Sprintf("TUN 已启动（网络栈: %s）", tun.Stack))
+		}
+	}
 	now := time.Now()
 	e.status = Status{Running: true, Mode: c.Settings.Mode, StartedAt: &now}
 	return nil
@@ -120,6 +141,7 @@ func (e *Engine) Stop() error {
 	err := e.instance.Close()
 	e.cancel()
 	e.instance, e.traffic, e.cancel = nil, nil, nil
+	e.nodesByOutbound = nil
 	e.status = Status{}
 	if err != nil {
 		e.status.Error = err.Error()
@@ -136,7 +158,24 @@ func (e *Engine) Snapshot() Status {
 		return status
 	}
 	status.Upload, status.Download = e.traffic.Total()
-	for _, c := range e.traffic.Connections() {
+	status.Connections = snapshotConnections(e.traffic.Connections(), e.nodesByOutbound)
+	return status
+}
+
+func snapshotConnections(connections []*trafficcontrol.TrackerMetadata, nodes map[string]model.NodeView) []Connection {
+	// Keep proxied traffic visible when direct traffic exceeds the display limit.
+	sort.Slice(connections, func(i, j int) bool {
+		a, b := connections[i], connections[j]
+		if model.IsProxyOutbound(a.Outbound) != model.IsProxyOutbound(b.Outbound) {
+			return model.IsProxyOutbound(a.Outbound)
+		}
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.After(b.CreatedAt)
+		}
+		return a.ID.String() < b.ID.String()
+	})
+	result := make([]Connection, 0, min(len(connections), 200))
+	for _, c := range connections {
 		path := ""
 		var pid uint32
 		if p := c.Metadata.ProcessInfo; p != nil {
@@ -146,12 +185,19 @@ func (e *Engine) Snapshot() Status {
 		if c.Metadata.Domain != "" {
 			destination = c.Metadata.Domain
 		}
-		status.Connections = append(status.Connections, Connection{c.ID.String(), c.Metadata.Network, destination, path, pid, c.Outbound == "selected", c.Upload.Load(), c.Download.Load()})
-		if len(status.Connections) >= 200 {
+		connection := Connection{
+			ID: c.ID.String(), Network: c.Metadata.Network, Destination: destination, ProcessPath: path, PID: pid,
+			Proxied: model.IsProxyOutbound(c.Outbound), Outbound: c.Outbound, Upload: c.Upload.Load(), Download: c.Download.Load(),
+		}
+		if node, ok := nodes[c.Outbound]; ok {
+			connection.Node = &node
+		}
+		result = append(result, connection)
+		if len(result) >= 200 {
 			break
 		}
 	}
-	return status
+	return result
 }
 
 // Probe makes an HTTPS request through the actual outbound, without touching TUN or system routes.

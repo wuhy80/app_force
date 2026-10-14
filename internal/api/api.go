@@ -15,6 +15,7 @@ import (
 	"appforce/internal/app"
 	"appforce/internal/model"
 	"appforce/internal/process"
+	"appforce/internal/program"
 	"appforce/internal/subscription"
 	"appforce/internal/web"
 )
@@ -22,6 +23,16 @@ import (
 func Handler(a *app.App) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) { send(w, a.Snapshot()) })
+	mux.HandleFunc("GET /api/programs", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		listing, err := program.Browse(ctx, r.URL.Query().Get("directory"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		send(w, listing)
+	})
 	mux.HandleFunc("GET /api/processes", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()

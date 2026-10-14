@@ -33,7 +33,7 @@ type Snapshot struct {
 	OS             string           `json:"os"`
 	Nodes          []model.NodeView `json:"nodes"`
 	Sources        []model.Source   `json:"sources"`
-	Rules          []model.Rule     `json:"rules"`
+	Rules          []model.RuleView `json:"rules"`
 	Devices        []model.Device   `json:"devices"`
 	SelectedNodeID string           `json:"selected_node_id"`
 	Settings       model.Settings   `json:"settings"`
@@ -55,6 +55,10 @@ func (a *App) Snapshot() Snapshot {
 	for _, node := range a.config.Nodes {
 		nodes = append(nodes, node.View())
 	}
+	rules := make([]model.RuleView, 0, len(a.config.Rules))
+	for _, rule := range a.config.Rules {
+		rules = append(rules, rule.View())
+	}
 	devices := append([]model.Device{}, a.config.Devices...)
 	for i := range devices {
 		devices[i].Token = ""
@@ -67,7 +71,7 @@ func (a *App) Snapshot() Snapshot {
 		}
 	}
 	hostname, _ := os.Hostname()
-	return Snapshot{model.Version, hostname, runtime.GOOS, nodes, sources, append([]model.Rule{}, a.config.Rules...), devices, a.config.SelectedNodeID, a.config.Settings, a.Engine.Snapshot()}
+	return Snapshot{model.Version, hostname, runtime.GOOS, nodes, sources, rules, devices, a.config.SelectedNodeID, a.config.Settings, a.Engine.Snapshot()}
 }
 
 // applyLocked applies a running configuration transactionally, restoring the prior engine on failure.
@@ -116,6 +120,7 @@ func (a *App) SelectNode(id string) error {
 }
 
 func (a *App) SetSettings(settings model.Settings) error {
+	settings.TUNStack = settings.EffectiveTUNStack()
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -131,12 +136,17 @@ func (a *App) SaveRule(rule model.Rule) error {
 	if err != nil {
 		return err
 	}
-	if path, e := os.Executable(); e == nil && model.SamePath(path, rule.Path) {
+	if path, e := os.Executable(); e == nil && rule.MatchesPath(path) {
 		return fmt.Errorf("代理服务本身不能加入代理规则")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	next := a.config.Clone()
+	if rule.NodeID != "" && rule.Enabled {
+		if _, ok := next.Node(rule.NodeID); !ok {
+			return fmt.Errorf("程序指定的节点不存在，请重新选择节点或跟随默认节点")
+		}
+	}
 	for i, existing := range next.Rules {
 		if existing.ID == rule.ID || model.SamePath(existing.Path, rule.Path) {
 			rule.ID = existing.ID

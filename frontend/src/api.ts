@@ -1,15 +1,17 @@
 export interface Node { id: string; source_id: string; name: string; type: string; server: string; port: number }
-export interface Rule { id: string; name: string; path: string; enabled: boolean }
+export interface Rule { id: string; name: string; path: string; enabled: boolean; node_id?: string; process_path_regex?: string[] }
 export interface Source { id: string; name: string; url?: string; updated_at: string; warnings: string[] }
 export interface Device { id: string; name: string; url: string; token?: string; certificate_sha256?: string }
-export interface Settings { mode: 'tun' | 'mixed'; mixed_port: number; dns_mode: 'direct' | 'proxy'; dns_address: string; strict_route: boolean; auto_redirect: boolean }
-export interface Connection { id: string; network: string; destination: string; process_path: string; pid: number; proxied: boolean; upload: number; download: number }
+export interface Settings { mode: 'tun' | 'mixed'; tun_stack: 'gvisor' | 'mixed' | 'system'; mixed_port: number; dns_mode: 'system' | 'direct' | 'proxy'; dns_address: string; strict_route: boolean; auto_redirect: boolean }
+export interface Connection { id: string; network: string; destination: string; process_path: string; pid: number; proxied: boolean; outbound: string; node?: Node; upload: number; download: number }
 export interface State {
   version: string; hostname: string; os: string; nodes: Node[]; sources: Source[]; rules: Rule[]; devices: Device[];
   selected_node_id: string; settings: Settings;
   engine: { running: boolean; mode: string; started_at: string | null; error: string; upload: number; download: number; connections: Connection[] }
 }
 export interface Process { pid: number; parent_pid: number; name: string; path: string; selectable: boolean }
+export interface ProgramEntry { name: string; path: string; directory: boolean }
+export interface ProgramDirectory { directory: string; parent: string; entries: ProgramEntry[] }
 export interface LogEntry { time: string; level: string; message: string }
 
 declare global {

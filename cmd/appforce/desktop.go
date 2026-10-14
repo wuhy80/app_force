@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,7 +54,14 @@ func (d *Desktop) Request(method, path, body string) (Reply, error) {
 
 func (d *Desktop) ChooseProgram() (string, error) {
 	<-d.ctxReady
-	return wruntime.OpenFileDialog(d.ctx, wruntime.OpenDialogOptions{Title: "选择要代理的程序"})
+	options := wruntime.OpenDialogOptions{Title: "选择要代理的程序（无需先启动）"}
+	if runtime.GOOS == "windows" {
+		options.Filters = []wruntime.FileFilter{{DisplayName: "程序 (*.exe)", Pattern: "*.exe"}}
+	} else if runtime.GOOS == "darwin" {
+		options.DefaultDirectory = "/Applications"
+		options.TreatPackagesAsDirectories = false
+	}
+	return wruntime.OpenFileDialog(d.ctx, options)
 }
 
 func (d *Desktop) quit() {

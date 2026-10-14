@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -97,6 +98,13 @@ type Rule struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	Enabled bool   `json:"enabled"`
+	NodeID  string `json:"node_id,omitempty"`
+}
+
+func NodeOutboundTag(nodeID string) string { return "node-" + nodeID }
+
+func IsProxyOutbound(tag string) bool {
+	return tag == "selected" || strings.HasPrefix(tag, "node-")
 }
 
 func NormalizeRule(rule Rule) (Rule, error) {
@@ -107,6 +115,14 @@ func NormalizeRule(rule Rule) (Rule, error) {
 	rule.Path = filepath.Clean(rule.Path)
 	if rule.Name == "" {
 		rule.Name = filepath.Base(rule.Path)
+		if IsAppBundle(rule.Path) {
+			rule.Name = strings.TrimSuffix(rule.Name, ".app")
+		}
+	}
+	// Match the executable's real path, including selections made through symlinks.
+	// Missing files remain valid so rules can be saved before installation.
+	if resolved, err := filepath.EvalSymlinks(rule.Path); err == nil {
+		rule.Path = resolved
 	}
 	if len(rule.Name) > 200 {
 		return rule, fmt.Errorf("程序名称过长")
@@ -124,8 +140,28 @@ func SamePath(a, b string) bool {
 	return a == b
 }
 
+func IsAppBundle(path string) bool {
+	return runtime.GOOS == "darwin" && strings.HasSuffix(filepath.Clean(path), ".app")
+}
+
+// MatchesPath includes the helper executables covered by an application rule.
+func (r Rule) MatchesPath(path string) bool {
+	if expressions := r.ProcessPathRegex(); len(expressions) != 0 {
+		for _, expression := range expressions {
+			if regexp.MustCompile(expression).MatchString(path) {
+				return true
+			}
+		}
+		return false
+	}
+	return SamePath(r.Path, path)
+}
+
+const DefaultTUNStack = "gvisor"
+
 type Settings struct {
 	Mode         string `json:"mode"`
+	TUNStack     string `json:"tun_stack"`
 	MixedPort    int    `json:"mixed_port"`
 	DNSMode      string `json:"dns_mode"`
 	DNSAddress   string `json:"dns_address"`
@@ -133,17 +169,30 @@ type Settings struct {
 	AutoRedirect bool   `json:"auto_redirect"`
 }
 
+// EffectiveTUNStack supports configurations and API clients predating this setting.
+func (s Settings) EffectiveTUNStack() string {
+	if s.TUNStack == "" {
+		return DefaultTUNStack
+	}
+	return s.TUNStack
+}
+
 func (s Settings) Validate() error {
 	if s.Mode != "tun" && s.Mode != "mixed" {
 		return fmt.Errorf("代理模式必须是 tun 或 mixed")
 	}
+	switch s.EffectiveTUNStack() {
+	case "gvisor", "mixed", "system":
+	default:
+		return fmt.Errorf("TUN 网络栈必须是 gvisor、mixed 或 system")
+	}
 	if s.MixedPort < 1024 || s.MixedPort > 65535 {
 		return fmt.Errorf("本地代理端口必须在 1024–65535 之间")
 	}
-	if s.DNSMode != "direct" && s.DNSMode != "proxy" {
-		return fmt.Errorf("DNS 模式必须是 direct 或 proxy")
+	if s.DNSMode != "system" && s.DNSMode != "direct" && s.DNSMode != "proxy" {
+		return fmt.Errorf("DNS 模式必须是 system、direct 或 proxy")
 	}
-	if net.ParseIP(s.DNSAddress) == nil {
+	if s.DNSMode != "system" && net.ParseIP(s.DNSAddress) == nil {
 		return fmt.Errorf("DNS 服务器必须是 IP 地址")
 	}
 	return nil
@@ -168,12 +217,16 @@ type Device struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Version: 1, Nodes: []Node{}, Sources: []Source{}, Rules: []Rule{}, Devices: []Device{}, Settings: Settings{Mode: "tun", MixedPort: 17890, DNSMode: "direct", DNSAddress: "1.1.1.1", AutoRedirect: true}}
+	return Config{Version: 1, Nodes: []Node{}, Sources: []Source{}, Rules: []Rule{}, Devices: []Device{}, Settings: Settings{Mode: "tun", TUNStack: DefaultTUNStack, MixedPort: 17890, DNSMode: "system", DNSAddress: "8.8.8.8", AutoRedirect: true}}
 }
 
 func (c Config) SelectedNode() (Node, bool) {
+	return c.Node(c.SelectedNodeID)
+}
+
+func (c Config) Node(id string) (Node, bool) {
 	for _, n := range c.Nodes {
-		if n.ID == c.SelectedNodeID {
+		if n.ID == id {
 			return n, true
 		}
 	}

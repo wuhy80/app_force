@@ -52,6 +52,7 @@ func Open(dir string) (*Store, model.Config, string, error) {
 	if c.Version != 1 {
 		return nil, c, "", fmt.Errorf("不支持的配置版本 %d", c.Version)
 	}
+	c.Settings.TUNStack = c.Settings.EffectiveTUNStack()
 	if err = c.Settings.Validate(); err != nil {
 		return nil, c, "", err
 	}
