@@ -89,6 +89,25 @@ func (a *App) DeleteDevice(id string) error {
 	return fmt.Errorf("设备不存在")
 }
 
+func (a *App) saveDeployedDevice(device model.Device) (string, error) {
+	// Redeployment updates the existing connection while retaining its stable device ID.
+	a.mu.Lock()
+	for _, existing := range a.config.Devices {
+		if existing.URL == device.URL {
+			device.ID = existing.ID
+			break
+		}
+	}
+	a.mu.Unlock()
+	if device.ID == "" {
+		device.ID = model.NewID()
+	}
+	if err := a.SaveDevice(device); err != nil {
+		return "", fmt.Errorf("Agent 已启动，但保存设备连接失败: %w", err)
+	}
+	return device.ID, nil
+}
+
 func (a *App) Remote(ctx context.Context, id, method, path string, body io.Reader) (int, []byte, error) {
 	a.mu.Lock()
 	var device model.Device

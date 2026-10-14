@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"appforce/internal/agentbundle"
 	"appforce/internal/app"
+	"appforce/internal/deploy"
 	"appforce/internal/model"
 	"appforce/internal/process"
 	"appforce/internal/program"
@@ -24,6 +26,41 @@ import (
 func Handler(a *app.App) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) { send(w, a.Snapshot()) })
+	mux.HandleFunc("GET /api/deployment/platforms", func(w http.ResponseWriter, r *http.Request) { send(w, agentbundle.Platforms()) })
+	mux.HandleFunc("POST /api/deployment/check", func(w http.ResponseWriter, r *http.Request) {
+		var body deploy.Request
+		if !read(w, r, &body) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		check, err := deploy.Inspect(ctx, body)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		send(w, check)
+	})
+	mux.HandleFunc("POST /api/deployment/jobs", func(w http.ResponseWriter, r *http.Request) {
+		var body deploy.Request
+		if !read(w, r, &body) {
+			return
+		}
+		job, err := a.Deployer.Start(body)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		send(w, job)
+	})
+	mux.HandleFunc("GET /api/deployment/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		job, err := a.Deployer.Job(r.PathValue("id"))
+		if err != nil {
+			sendError(w, http.StatusNotFound, err.Error(), nil)
+			return
+		}
+		send(w, job)
+	})
 	mux.HandleFunc("GET /api/traffic", func(w http.ResponseWriter, r *http.Request) {
 		days := 7
 		query := r.URL.Query()

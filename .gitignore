@@ -8,3 +8,6 @@
 /.playwright-cli/
 cache.db
 *.syso
+/internal/agentbundle/payloads/*.gz
+/internal/agentbundle/payloads/*.tmp
+/internal/agentbundle/payloads/manifest.json

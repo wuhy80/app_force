@@ -17,6 +17,7 @@
 - JSON 原子保存；订阅刷新保留稳定节点 ID；失败不覆盖旧订阅。
 - 运行时配置变更失败时恢复旧配置。重新配置会关闭现有连接。
 - 远程设备管理：每台机器执行自己的代理，由本机 API 转发管理请求；支持 HTTPS 和证书指纹固定。
+- SSH 自动部署：输入 Linux/Mac 主机、用户名和密码，自动识别平台、上传内置 Agent、安装后台服务并加入设备列表。
 - 设备 HTTPS 证书生成、Bearer 管理密钥、浏览器来源校验、敏感字段从状态接口移除。
 
 ## 构建
@@ -28,12 +29,15 @@
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run build
+go run ./build/agents
 go build -trimpath -tags with_quic,with_utls,with_gvisor -o bin/appforce ./cmd/appforce
 ```
 
 `with_quic` 支持 Hysteria2；`with_utls` 支持 TLS 指纹和 Reality 常用配置；`with_gvisor` 支持 TUN 的 gVisor 与混合网络栈。所有正式构建应保留这三个标记。
 
 普通构建在启动时打开默认浏览器。网页资源、后台、代理内核都来自同一个可执行文件。
+
+`make build`、`make desktop`、`make windows` 和 Windows 构建脚本会先构建并内置 Linux/macOS 的 amd64、arm64 Agent，上传时自动选择平台。部署包不需要远端联网下载，也不要求远端安装 Go 或 Node.js。`make agents` 可单独重新生成部署包；生成的压缩包和清单位于 `internal/agentbundle/payloads/`，不提交到 Git。直接使用 `go build` 而未先生成部署包时，仍能连接已有 Agent，但不能自动部署。
 
 ### Windows 桌面单应用
 
@@ -134,6 +138,18 @@ gVisor 可绕开 Windows 系统栈将 TCP 改写到本机监听端口的路径�
 历史按记录设备的本地日期汇总，保存在配置目录的 `traffic.db`（Windows 为 `%APPDATA%\AppForce\traffic.db`），每 5 秒自动保存，正常停止或切换配置时立即保存。保存失败会在统计页提示并保留内存计数以便重试，代理转发继续运行。历史从启用此版本后开始记录，不能恢复升级前的数据；进程被强制终止或断电时，最后一次保存后的少量数据可能丢失。每台远程设备独立保存历史，切换设备可查看对应统计。
 
 ## 从 Windows 管理 Linux / Mac
+
+推荐在 Windows 的“设备管理 → 添加设备 → SSH 自动部署”中输入设备名称、IP/主机名、SSH 端口（默认 22）、用户名和密码，点击“部署并启动”。高级设置可填写不同的 sudo 密码和 Agent 管理端口（默认 17891）。程序自动完成平台识别、SHA-256 上传校验、管理员提权、证书生成、后台服务安装、HTTPS 连接验证和设备添加，界面显示各阶段进度。成功后自动切换到新设备，再导入节点、添加远端应用并启动代理；新安装不会在未配置节点时启用全局代理。
+
+远端须已开启 SSH 并允许密码登录。Linux 需要正在运行的 systemd、`/dev/net/tun` 和 root 或 sudo 账号；macOS 需要启用“系统设置 → 通用 → 共享 → 远程登录”，并使用允许远程登录的管理员账号。SSH 检查到的主机指纹用于后续部署连接的验证，指纹变化会中止部署。密码只用于本次 SSH/sudo 操作，不写入配置、设备列表或部署进度；安装后管理使用 Agent 密钥和 HTTPS 证书指纹。
+
+自动部署的管理服务监听 HTTPS，防火墙或云安全组需允许管理端口从 Windows 所在网络访问。SSH 登录成功而管理端口不通时，页面会提示 Agent 已安装但无法连接，并显示管理地址。程序不会自动修改远端防火墙。
+
+Linux 安装到 `/opt/appforce/bin/appforce`，配置保存在 `/var/lib/appforce`，后台服务为 `appforce-agent.service`；Mac 安装到 `/usr/local/lib/appforce/appforce`，配置保存在 `/Library/Application Support/AppForce`，后台服务为 `com.appforce.agent`。均配置为开机运行。重复部署保留配置、管理密钥和历史流量，并更新已有的同地址设备；安装或本机启动验证失败时恢复旧二进制和服务文件。已有手动运行的 Linux `appforce.service` 会阻止自动安装，避免两套服务冲突，可选择“连接已有 Agent”。
+
+“移除设备”只删除 Windows 上的管理连接，远端 Agent 继续运行。部署任务进度仅保存在当前管理程序内存中，关闭整个程序会中断尚未完成的部署；已成功启动的远端后台服务不受影响。
+
+也可选择“连接已有 Agent”，通过以下两种方式管理已安装的设备。
 
 远端运行相同的 AppForce。配置在远端本地保存；关闭 Windows 管理窗口不会停止远端服务。
 

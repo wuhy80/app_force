@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { APIError, desktop, request, setToken, type Device, type LogEntry, type Node, type Process, type ProgramDirectory, type Rule, type Settings, type State } from './api'
+import { APIError, desktop, request, setToken, type DeploymentJob, type Device, type LogEntry, type Node, type Process, type ProgramDirectory, type Rule, type Settings, type State } from './api'
 import { plainLogText } from './log'
 import TrafficPage from './TrafficPage.vue'
+import DeploymentForm from './DeploymentForm.vue'
 
 type Page = 'programs' | 'nodes' | 'connections' | 'traffic' | 'devices' | 'settings' | 'logs'
 const pages: { id: Page; label: string; icon: string }[] = [
@@ -15,6 +16,7 @@ const page = ref<Page>('programs'), state = ref<State>(), local = ref<State>(), 
 const error = ref(''), notice = ref(''), warnings = ref<string[]>([]), busy = ref(false), loading = ref(true), unauthorized = ref(false)
 const loginToken = ref(''), processSearch = ref(''), nodeSearch = ref(''), processes = ref<Process[]>([]), logs = ref<LogEntry[]>([])
 const showProgramPicker = ref(false), showImport = ref(false), showDeviceForm = ref(false)
+const deviceMode = ref<'ssh' | 'existing'>('ssh'), deploymentRunning = ref(false)
 const showProgramBrowser = ref(false), showRunningPrograms = ref(false), choosingProgram = ref(false), programLoading = ref(false), processLoading = ref(false)
 const programBrowser = ref<ProgramDirectory>(), programDirectory = ref(''), programSearch = ref('')
 const manualPath = ref(''), manualName = ref(''), importName = ref(''), importURL = ref(''), importContent = ref(''), importMode = ref<'url' | 'text'>('url')
@@ -190,6 +192,12 @@ async function saveSettings() { await action(async () => { await request('PUT', 
 async function saveDevice() {
   await action(async () => { await request('POST', '/api/devices', deviceDraft.value); showDeviceForm.value = false; deviceDraft.value = { id: '', name: '', url: 'https://', token: '', certificate_sha256: '' } }, '设备已添加，可从左上角切换')
 }
+async function deployedDevice(job: DeploymentJob) {
+  showDeviceForm.value = false; notice.value = `${job.name} 的 Agent 已部署并启动，请配置节点和程序。`
+  selectedDevice.value = job.device_id
+  await switchDevice()
+  page.value = 'programs'
+}
 async function deleteDevice(id: string) {
   if (!confirm('移除该设备的管理连接？')) return
   await action(async () => { await request('DELETE', `/api/devices/${id}`); if (selectedDevice.value === id) selectedDevice.value = '' })
@@ -251,10 +259,10 @@ onUnmounted(() => clearInterval(poll))
           </template>
 
           <template v-if="page === 'devices'">
-            <div class="page-title"><div><span class="eyebrow">CONNECTED DEVICES</span><h1>设备管理</h1><p>管理运行 AppForce 的 Windows、Linux 和 Mac。</p></div><button class="primary" @click="showDeviceForm = true">＋ 添加设备</button></div>
+            <div class="page-title"><div><span class="eyebrow">CONNECTED DEVICES</span><h1>设备管理</h1><p>部署 Linux、Mac Agent，或连接已安装的设备。</p></div><button class="primary" @click="deviceMode = 'ssh'; showDeviceForm = true">＋ 添加设备</button></div>
             <div class="device-row"><span class="app-avatar">{{ local?.os === 'darwin' ? 'M' : local?.os === 'windows' ? 'W' : 'L' }}</span><div><strong>{{ local?.hostname }}</strong><small>本机 · {{ local?.os }}</small></div><button class="text-button" @click="selectedDevice = ''; switchDevice()">管理 <span>↗</span></button></div>
             <div v-for="d in local?.devices" :key="d.id" class="device-row"><span class="app-avatar">↗</span><div><strong>{{ d.name }}</strong><small>{{ d.url }}</small></div><button class="text-button" @click="selectedDevice = d.id; switchDevice()">连接</button><button class="text-button muted" @click="deleteDevice(d.id)">移除</button></div>
-            <div class="footnote"><span>ⓘ</span><p>每台设备独立运行代理。管理界面断开后，远端继续使用当前配置。远程服务需要 HTTPS，可填写证书指纹连接自签名证书。</p></div>
+            <div class="footnote"><span>ⓘ</span><p>输入 SSH 账号密码可自动部署 Linux 或 Mac，无需预先安装 Agent。每台设备独立运行代理；管理界面断开后，远端继续运行。</p></div>
           </template>
 
           <template v-if="page === 'settings' && settings">
@@ -280,9 +288,9 @@ onUnmounted(() => clearInterval(poll))
       </div>
     </main>
 
-    <div v-if="showProgramPicker || showImport || showDeviceForm" class="modal-backdrop" @click.self="!busy && !choosingProgram && (showProgramPicker = showImport = showDeviceForm = false)">
+    <div v-if="showProgramPicker || showImport || showDeviceForm" class="modal-backdrop" @click.self="!busy && !choosingProgram && !deploymentRunning && (showProgramPicker = showImport = showDeviceForm = false)">
       <section class="modal" :class="{ wide: showProgramPicker }" role="dialog" aria-modal="true" :aria-label="showProgramPicker ? '添加程序' : showImport ? '添加订阅' : '添加设备'">
-        <header class="modal-header"><div><span class="eyebrow">{{ deviceLabel }}</span><h2>{{ showProgramPicker ? '添加程序' : showImport ? '添加订阅' : '添加设备' }}</h2></div><button class="close-button" :disabled="busy || choosingProgram" aria-label="关闭" @click="showProgramPicker = showImport = showDeviceForm = false">×</button></header>
+        <header class="modal-header"><div><span class="eyebrow">{{ deviceLabel }}</span><h2>{{ showProgramPicker ? '添加程序' : showImport ? '添加订阅' : '添加设备' }}</h2></div><button class="close-button" :disabled="busy || choosingProgram || deploymentRunning" aria-label="关闭" @click="showProgramPicker = showImport = showDeviceForm = false">×</button></header>
         <div v-if="error" class="alert error" role="alert">{{ error }}</div>
         <details v-if="warnings.length" class="warning"><summary>{{ warnings.length }} 条导入提示</summary><p v-for="(w, i) in warnings" :key="i">{{ w }}</p></details>
         <template v-if="showProgramPicker">
@@ -315,7 +323,11 @@ onUnmounted(() => clearInterval(poll))
           </section>
         </template>
         <form v-if="showImport" class="form" @submit.prevent="importSubscription"><label>订阅名称<input v-model="importName" placeholder="例如：我的订阅" /></label><div class="segmented"><button type="button" :class="{ selected: importMode === 'url' }" @click="importMode = 'url'">订阅地址</button><button type="button" :class="{ selected: importMode === 'text' }" @click="importMode = 'text'">粘贴内容</button></div><label v-if="importMode === 'url'">订阅地址<input v-model="importURL" type="url" placeholder="https://…" required autocomplete="off" /></label><label v-else>订阅或分享链接<textarea v-model="importContent" rows="8" placeholder="粘贴 Clash YAML、sing-box JSON、base64 或分享链接" required></textarea></label><p class="muted">导入后逐项校验节点；不支持的节点会列出原因。</p><button class="primary full-width" :disabled="busy" type="submit">{{ busy ? '正在导入并校验…' : '导入订阅' }}</button></form>
-        <form v-if="showDeviceForm" class="form" @submit.prevent="saveDevice"><label>设备名称<input v-model="deviceDraft.name" placeholder="例如：开发服务器" required /></label><label>管理地址<input v-model="deviceDraft.url" type="url" placeholder="https://192.168.1.10:17891" required /></label><label>管理密钥<input v-model="deviceDraft.token" type="password" autocomplete="off" placeholder="远端配置目录中的 token" required /></label><label>证书 SHA-256 指纹（可选）<input v-model="deviceDraft.certificate_sha256" placeholder="自签名证书需要填写指纹" /></label><p class="muted">远端运行 AppForce --headless 并开启 HTTPS。SSH 隧道可使用回环 HTTP 地址。</p><button class="primary full-width" :disabled="busy" type="submit">保存设备</button></form>
+        <template v-if="showDeviceForm">
+          <div class="segmented device-mode"><button type="button" :class="{ selected: deviceMode === 'ssh' }" :disabled="deploymentRunning" @click="deviceMode = 'ssh'">SSH 自动部署</button><button type="button" :class="{ selected: deviceMode === 'existing' }" :disabled="deploymentRunning" @click="deviceMode = 'existing'">连接已有 Agent</button></div>
+          <DeploymentForm v-if="deviceMode === 'ssh'" @running="deploymentRunning = $event" @completed="deployedDevice" />
+          <form v-else class="form" @submit.prevent="saveDevice"><label>设备名称<input v-model="deviceDraft.name" placeholder="例如：开发服务器" required /></label><label>管理地址<input v-model="deviceDraft.url" type="url" placeholder="https://192.168.1.10:17891" required /></label><label>管理密钥<input v-model="deviceDraft.token" type="password" autocomplete="off" placeholder="远端配置目录中的 token" required /></label><label>证书 SHA-256 指纹（可选）<input v-model="deviceDraft.certificate_sha256" placeholder="自签名证书需要填写指纹" /></label><p class="muted">连接已运行的 Agent。SSH 隧道可使用回环 HTTP 地址。</p><button class="primary full-width" :disabled="busy" type="submit">保存设备</button></form>
+        </template>
       </section>
     </div>
   </div>

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"appforce/internal/deploy"
 	"appforce/internal/engine"
 	"appforce/internal/model"
 	"appforce/internal/store"
@@ -21,11 +22,12 @@ import (
 )
 
 type App struct {
-	mu     sync.Mutex
-	config model.Config
-	store  *store.Store
-	Engine engine.Engine
-	Token  string
+	mu       sync.Mutex
+	config   model.Config
+	store    *store.Store
+	Engine   engine.Engine
+	Token    string
+	Deployer *deploy.Manager
 }
 
 type Snapshot struct {
@@ -51,6 +53,7 @@ func Open(dir string) (*App, error) {
 		return nil, err
 	}
 	a := &App{store: s, config: c, Token: token, Engine: engine.Engine{CachePath: filepath.Join(dir, "engine-cache.db"), Recorder: recorder}}
+	a.Deployer = deploy.NewManager(a.saveDeployedDevice)
 	return a, nil
 }
 

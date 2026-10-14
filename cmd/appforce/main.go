@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 
 	"appforce/internal/api"
 	"appforce/internal/app"
+	"appforce/internal/deploy"
 	"appforce/internal/security"
 	"github.com/gofrs/flock"
 )
@@ -32,6 +34,8 @@ func main() {
 	autostart := flag.Bool("autostart", false, "启动时应用已保存的代理配置")
 	showToken := flag.Bool("show-token", false, "显示管理密钥并退出")
 	initTLS := flag.Bool("init-tls", false, "生成设备 HTTPS 证书，显示指纹并退出")
+	pairingInfo := flag.Bool("pairing-info", false, "为自动部署准备证书并输出管理凭据 JSON")
+	verifyAgent := flag.Bool("verify-agent", false, "验证本机 HTTPS Agent 已启动并退出")
 	flag.Parse()
 	a, err := app.Open(*data)
 	if err != nil {
@@ -39,6 +43,28 @@ func main() {
 	}
 	if *showToken {
 		fmt.Println(a.Token)
+		return
+	}
+	if *pairingInfo {
+		fingerprint, err := security.EnsureCertificate(*data)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"token": a.Token, "fingerprint": fingerprint}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *verifyAgent {
+		fingerprint, err := security.EnsureCertificate(*data)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := deploy.VerifyAgent(ctx, "https://"+*listen, a.Token, fingerprint); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	if *initTLS {
@@ -77,6 +103,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	defer a.Stop()
+	defer a.Deployer.Close()
 	go func() {
 		var serveErr error
 		if *cert != "" {

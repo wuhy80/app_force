@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -74,5 +75,38 @@ func GenerateCertificate(dir string) (string, error) {
 		}
 	}
 	fingerprint := sha256.Sum256(der)
+	return hex.EncodeToString(fingerprint[:]), nil
+}
+
+// EnsureCertificate preserves an existing device identity when redeploying an agent.
+func EnsureCertificate(dir string) (string, error) {
+	certPath, keyPath := filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key")
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	if os.IsNotExist(certErr) && os.IsNotExist(keyErr) {
+		return GenerateCertificate(dir)
+	}
+	if certErr != nil || keyErr != nil {
+		return "", fmt.Errorf("设备证书或私钥不完整，请检查配置目录")
+	}
+	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+		return "", fmt.Errorf("设备证书与私钥校验失败: %w", err)
+	}
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("设备证书格式错误")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	if now := time.Now(); now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return "", fmt.Errorf("设备证书已过期或尚未生效，请更新证书")
+	}
+	fingerprint := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(fingerprint[:]), nil
 }

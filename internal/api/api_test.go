@@ -164,6 +164,9 @@ func TestPinnedRemoteDeviceManagement(t *testing.T) {
 	if call(localHandler, "GET", prefix+"devices", local.Token, "").Code != 400 {
 		t.Fatal("nested pairing route accessible")
 	}
+	if call(localHandler, "GET", prefix+"deployment/platforms", local.Token, "").Code != 400 {
+		t.Fatal("remote deployment endpoint accessible")
+	}
 	if call(localHandler, "GET", prefix+"remote/anything/state", local.Token, "").Code != 400 {
 		t.Fatal("recursive remote route accessible")
 	}

@@ -40,3 +40,26 @@ func TestGeneratedCertificateLoadsAndIsNeverOverwritten(t *testing.T) {
 		t.Fatal("private key overwritten")
 	}
 }
+
+func TestAutomaticPairingReusesIdentityAndRejectsPartialCertificates(t *testing.T) {
+	dir := t.TempDir()
+	first, err := EnsureCertificate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, "server.key"))
+	second, err := EnsureCertificate(dir)
+	if err != nil || first != second {
+		t.Fatalf("identity changed: %s %s %v", first, second, err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "server.key"))
+	if string(before) != string(after) {
+		t.Fatal("automatic redeploy changed private key")
+	}
+	if err := os.Remove(filepath.Join(dir, "server.key")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureCertificate(dir); err == nil {
+		t.Fatal("partial identity was silently replaced")
+	}
+}

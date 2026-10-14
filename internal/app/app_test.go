@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,6 +46,32 @@ func TestSavedAntigravityRuleAutomaticallyIncludesLanguageServer(t *testing.T) {
 	}
 	if len(saved.Rules) != 1 || strings.Contains(string(raw), "process_path_regex") {
 		t.Fatal("generated helper rules were unnecessarily persisted")
+	}
+}
+
+func TestRedeployedDeviceRetainsIDAndDoesNotExposeCredentials(t *testing.T) {
+	dir := t.TempDir()
+	a, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := model.Device{Name: "first", URL: "https://192.0.2.1:17891", Token: strings.Repeat("a", 64), CertificateSHA256: strings.Repeat("b", 64)}
+	first, err := a.saveDeployedDevice(device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.Name, device.Token = "updated", strings.Repeat("c", 64)
+	second, err := a.saveDeployedDevice(device)
+	if err != nil || first != second {
+		t.Fatalf("device ID changed on redeploy: %s %s %v", first, second, err)
+	}
+	snapshot := a.Snapshot()
+	if len(snapshot.Devices) != 1 || snapshot.Devices[0].Name != "updated" || snapshot.Devices[0].Token != "" {
+		t.Fatalf("invalid or exposed device: %+v", snapshot.Devices)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil || !strings.Contains(string(data), device.Token) {
+		t.Fatal("management credentials not persisted")
 	}
 }
 

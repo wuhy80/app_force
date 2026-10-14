@@ -2,7 +2,7 @@ TAGS = with_quic,with_utls,with_gvisor
 
 .DEFAULT_GOAL := help
 
-.PHONY: help frontend build desktop windows test check clean
+.PHONY: help frontend agents build desktop windows test check clean
 help: ## 显示命令列表和三平台编译示例（默认命令）
 	@printf '%s\n' '用法：make <命令>' '' '可用命令：'
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -22,13 +22,16 @@ frontend: ## 安装前端依赖并构建界面
 	npm --prefix frontend ci
 	npm --prefix frontend run build
 
-build: frontend ## 编译当前系统的浏览器界面版，输出 bin/appforce
+agents: frontend ## 构建并内置 Linux/macOS x64、ARM64 远程 Agent
+	go run ./build/agents
+
+build: agents ## 编译当前系统的浏览器界面版，输出 bin/appforce
 	go build -trimpath -tags $(TAGS) -o bin/appforce ./cmd/appforce
 
-desktop: frontend ## 编译当前系统的原生桌面窗口版，输出 bin/appforce-desktop
+desktop: agents ## 编译当前系统的原生桌面窗口版，输出 bin/appforce-desktop
 	go build -trimpath -tags desktop,production,$(TAGS) -o bin/appforce-desktop ./cmd/appforce
 
-windows: frontend ## 交叉编译 Windows x64 桌面版，输出 bin/AppForce.exe
+windows: agents ## 交叉编译 Windows x64 桌面版，输出 bin/AppForce.exe
 	go run ./build/windows
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -tags desktop,production,$(TAGS) -ldflags "-H windowsgui" -o bin/AppForce.exe ./cmd/appforce
 
@@ -42,3 +45,4 @@ check: ## 执行 Go 静态检查和前端构建检查
 clean: ## 删除 bin 构建产物和生成的 Windows 资源文件
 	rm -rf bin
 	rm -f cmd/appforce/rsrc_windows_*.syso
+	rm -f internal/agentbundle/payloads/*.gz internal/agentbundle/payloads/manifest.json
