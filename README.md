@@ -68,6 +68,8 @@ make windows
 
 推送与应用版本一致的 `vX.Y.Z` 标签后，GitHub Actions 自动构建 x64 / ARM64 Windows 包，运行宿主机测试、静态检查和 Windows 编译检查，生成 SHA-256、对应源码及依赖许可，再发布到 GitHub Release。流程使用仓库自带的 `GITHUB_TOKEN`；已发布版本的资产不会覆盖。失败后可在 Actions 的 “Publish Windows release” 中选择已有标签重新运行。
 
+在 `main` 更新发布工作流也会重试当前应用版本的既有标签；构建始终检出标签对应提交，发布任务按顺序执行。
+
 本地已构建两个架构后，可执行 `python3 scripts/package-windows.py --version v0.1.0 --output output/release` 整理发布文件（Python >= 3.9）。输出目录必须不存在，`assets/` 包含两份 Windows ZIP、源码包和校验文件。打包脚本会核对 EXE 架构、清单、构建提交及内置资源，并收集对应 Go / 前端依赖源码和许可证。Windows 真机运行验证仍需单独完成。
 
 ### Linux / macOS

@@ -2,8 +2,12 @@ name: Publish Windows release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/release-windows.yml'
   workflow_dispatch:
     inputs:
       tag:
@@ -15,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-release-${{ inputs.tag || github.ref_name }}
+  group: windows-release
   cancel-in-progress: false
 
 jobs:
@@ -23,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,8 +37,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "$RELEASE_TAG" ]]; then
+            RELEASE_TAG="v$(python3 -c 'import pathlib,re; print(re.search(r"const Version = \"([^\"]+)\"", pathlib.Path("internal/model/model.go").read_text()).group(1))')"
+          fi
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git checkout --detach "refs/tags/$RELEASE_TAG"
           [[ "$(git rev-parse HEAD)" == "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]]
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
