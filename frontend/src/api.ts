@@ -28,7 +28,9 @@ export interface TrafficReport {
 }
 
 declare global {
-  interface Window { go?: { main?: { Desktop?: {
+  interface Window {
+    runtime?: { BrowserOpenURL(url: string): void };
+    go?: { main?: { Desktop?: {
     Request(method: string, path: string, body: string): Promise<{ status: number; body: string }>;
     ChooseProgram(): Promise<string>;
   } } } }
