@@ -19,7 +19,7 @@ func main() {
 		log.Fatal(err)
 	}
 	resources.SetManifest(winres.AppManifest{
-		Identity:       winres.AssemblyIdentity{Name: "AppForce", Version: [4]uint16{0, 1, 0, 0}},
+		Identity:       winres.AssemblyIdentity{Name: "AppForce", Version: [4]uint16{0, 1, 1, 0}},
 		Description:    "AppForce application proxy",
 		Compatibility:  winres.Win10AndAbove,
 		ExecutionLevel: winres.RequireAdministrator,

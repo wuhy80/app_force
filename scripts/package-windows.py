@@ -17,6 +17,9 @@ import zipfile
 TAGS = 'desktop,production,with_quic,with_utls,with_gvisor'
 AGENT_TAGS = 'agent,with_quic,with_utls,with_gvisor'
 NOTICE_NAME = re.compile(r'^(license|licence|copying|copyright|notice|patents)(?:[._-].*)?$', re.I)
+# This optional Linux build-host compressor is not embedded in the Windows
+# app. Upstream omits its license text, so do not redistribute the native tool.
+EXCLUDED_FRONTEND_PACKAGES = {'@napi-rs/lzma-linux-x64-gnu'}
 
 
 def run(*args, env=None):
@@ -83,6 +86,18 @@ def validate_binary(file, architecture, commit, manifest, module_map):
     print(f'Validated Windows {architecture}: {len(data)/1048576:.1f} MiB', flush=True)
 
 
+def copy_frontend_source(destination):
+    source = pathlib.Path('frontend/node_modules')
+
+    def excluded(directory, names):
+        relative = pathlib.Path(directory).relative_to(source)
+        return [name for name in names if str(relative/name) in EXCLUDED_FRONTEND_PACKAGES]
+
+    shutil.copytree(source, destination, symlinks=True, ignore=excluded)
+    for name in EXCLUDED_FRONTEND_PACKAGES:
+        assert not (destination/name).exists(), f'Excluded build-host tool was copied: {name}'
+
+
 def collect_licenses(destination, used, module_map):
     inventory = []
     for name in sorted(used):
@@ -108,6 +123,11 @@ def collect_licenses(destination, used, module_map):
         if not (len(parts) == 2 or len(parts) == 3 and parts[0].startswith('@')):
             continue
         metadata = json.loads(package.read_text())
+        if metadata['name'] in EXCLUDED_FRONTEND_PACKAGES:
+            frontend.append({'package': metadata['name'], 'version': metadata['version'],
+                             'license': metadata.get('license'), 'source_included': False,
+                             'reason': 'Optional Linux build-host tool omitted from release; reinstall with npm ci'})
+            continue
         found = []
         package_out = destination/'frontend'/(metadata['name']+'@'+metadata['version'])
         for file in package.parent.rglob('*'):
@@ -165,8 +185,8 @@ def prepare_source(source, output, used, licenses, commit, tag):
             if directory.exists():
                 shutil.rmtree(directory)
     shutil.copytree(licenses, source/'THIRD_PARTY_LICENSES')
-    shutil.copytree('frontend/node_modules', source/'frontend/node_modules', symlinks=True)
-    (source/'RELEASE-BUILD.md').write_text(f'''# AppForce {tag} corresponding source\n\nSource commit: {commit}\n\nIncludes repository source, build scripts, lockfiles, required Go vendor source, frontend dependency source and licenses. Optional features not used by the release are excluded from vendor. Their versions remain pinned in go.mod/go.sum.\n\nRequires Go >= 1.25.5, Node.js >= 22.12 and Python >= 3.9 for release packaging. Run make windows on macOS/Linux, or scripts/build-windows.ps1 on Windows. npm ci reinstalls build dependencies for the target host.\n\nBuilds regenerate Windows resources and four embedded Agents. See README.md and .github/workflows/release-windows.yml for the complete pipeline.\n''')
+    copy_frontend_source(source/'frontend/node_modules')
+    (source/'RELEASE-BUILD.md').write_text(f'''# AppForce {tag} corresponding source\n\nSource commit: {commit}\n\nIncludes repository source, build scripts, lockfiles, required Go vendor source, frontend dependency source and licenses. Optional features not used by the release are excluded from vendor. Their versions remain pinned in go.mod/go.sum. The optional Linux build-host native compressor @napi-rs/lzma-linux-x64-gnu is not redistributed; npm ci reinstalls it from the lockfile if required.\n\nRequires Go >= 1.25.5, Node.js >= 22.12 and Python >= 3.9 for release packaging. Run make windows on macOS/Linux, or scripts/build-windows.ps1 on Windows. npm ci reinstalls build dependencies for the target host.\n\nBuilds regenerate Windows resources and four embedded Agents. See README.md and .github/workflows/release-windows.yml for the complete pipeline.\n''')
 
 
 def package(tag, output):
