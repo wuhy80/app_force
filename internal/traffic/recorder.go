@@ -40,6 +40,12 @@ type Day struct {
 	Totals
 }
 
+type Hour struct {
+	// A local calendar hour on the recording device, without browser timezone conversion.
+	Hour string `json:"hour"`
+	Totals
+}
+
 type Report struct {
 	GeneratedAt    time.Time     `json:"generated_at"`
 	CollectedSince time.Time     `json:"collected_since"`
@@ -50,6 +56,9 @@ type Report struct {
 	Applications   []Application `json:"applications"`
 	Summary        Metrics       `json:"summary"`
 	History        []Day         `json:"history"`
+	HourlyHistory  []Hour        `json:"hourly_history,omitempty"`
+	// Older daily records cannot be assigned to an hour after upgrading.
+	HourlyUnallocated Totals `json:"hourly_unallocated"`
 }
 
 type appRecord struct {
@@ -69,8 +78,10 @@ type Recorder struct {
 	now          func() time.Time
 	apps         map[string]*appRecord
 	days         map[string][2]Totals // local calendar date + NUL + stable application ID
+	hours        map[string][2]Totals // local calendar hour + NUL + stable application ID
 	dirtyApps    map[string]bool
 	dirtyDays    map[string]bool
+	dirtyHours   map[string]bool
 	since        time.Time
 	savedAt      *time.Time
 	storageError string
@@ -79,8 +90,8 @@ type Recorder struct {
 
 // Open uses short database transactions, so an idle recorder holds no file lock.
 func Open(file string) (*Recorder, error) {
-	r := &Recorder{file: file, now: time.Now, apps: make(map[string]*appRecord), days: make(map[string][2]Totals),
-		dirtyApps: make(map[string]bool), dirtyDays: make(map[string]bool), since: time.Now(), lastSample: time.Now()}
+	r := &Recorder{file: file, now: time.Now, apps: make(map[string]*appRecord), days: make(map[string][2]Totals), hours: make(map[string][2]Totals),
+		dirtyApps: make(map[string]bool), dirtyDays: make(map[string]bool), dirtyHours: make(map[string]bool), since: time.Now(), lastSample: time.Now()}
 	if err := r.load(); err != nil {
 		return nil, fmt.Errorf("读取流量历史失败: %w", err)
 	}
@@ -136,11 +147,16 @@ func (r *Recorder) count(id string, proxied bool, upload, download int64) {
 	value := Totals{max(upload, 0), max(download, 0)}
 	index := scope(proxied)
 	a.Totals[index].add(value)
-	key := r.now().Format("2006-01-02") + "\x00" + id
+	now := r.now()
+	key := now.Format("2006-01-02") + "\x00" + id
 	day := r.days[key]
 	day[index].add(value)
 	r.days[key] = day
 	r.dirtyApps[id], r.dirtyDays[key] = true, true
+	hourKey := now.Format("2006-01-02T15:00") + "\x00" + id
+	hour := r.hours[hourKey]
+	hour[index].add(value)
+	r.hours[hourKey], r.dirtyHours[hourKey] = hour, true
 }
 
 func (r *Recorder) active(id string, proxied bool, delta int64) {
@@ -256,5 +272,49 @@ func (r *Recorder) Report(days int, appID string, includeDirect bool) (Report, e
 		}
 		return a.ID < b.ID
 	})
+	if days == 1 {
+		var allocated Totals
+		report.HourlyHistory, allocated = r.todayHours(now, appID, end)
+		report.HourlyUnallocated = Totals{
+			Upload:   max(0, report.Summary.Upload-allocated.Upload),
+			Download: max(0, report.Summary.Download-allocated.Download),
+		}
+	}
 	return report, nil
+}
+
+// todayHours runs with mu held. Each bar groups a local clock hour; repeated hours
+// at the end of daylight saving time share a bar, just as they share a daily total.
+func (r *Recorder) todayHours(now time.Time, appID string, scopeEnd int) ([]Hour, Totals) {
+	date := now.Format("2006-01-02")
+	indexes := make(map[string]int, 24)
+	for hour := 0; hour <= now.Hour(); hour++ {
+		indexes[fmt.Sprintf("%sT%02d:00", date, hour)] = hour
+	}
+	var buckets [24]Totals
+	for key, totals := range r.hours {
+		hour, id, _ := strings.Cut(key, "\x00")
+		index, today := indexes[hour]
+		if !today || (appID != "" && appID != id) {
+			continue
+		}
+		for s := 0; s < scopeEnd; s++ {
+			buckets[index].add(totals[s])
+		}
+	}
+	// Before 08:00, show the current hour or the earliest traffic, without future bars.
+	start := min(8, now.Hour())
+	for hour := 0; hour < start; hour++ {
+		if buckets[hour] != (Totals{}) {
+			start = hour
+			break
+		}
+	}
+	history := make([]Hour, 0, now.Hour()-start+1)
+	var allocated Totals
+	for hour := start; hour <= now.Hour(); hour++ {
+		history = append(history, Hour{Hour: fmt.Sprintf("%sT%02d:00", date, hour), Totals: buckets[hour]})
+		allocated.add(buckets[hour])
+	}
+	return history, allocated
 }

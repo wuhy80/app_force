@@ -241,6 +241,8 @@ func TestParentApplicationWinsOverSavedHelperRule(t *testing.T) {
 
 func TestPersistenceFailureRetriesLatestValuesWithoutDoubling(t *testing.T) {
 	r := openTest(t)
+	now := time.Date(2026, 10, 14, 14, 55, 0, 0, time.FixedZone("CST", 8*3600))
+	r.now = func() time.Time { return now }
 	id := r.Register("test", "/test")
 	r.count(id, true, 10, 20)
 	if err := r.Flush(); err != nil {
@@ -250,6 +252,7 @@ func TestPersistenceFailureRetriesLatestValuesWithoutDoubling(t *testing.T) {
 	if err := os.Rename(dir, dir+"-offline"); err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(time.Hour)
 	r.count(id, true, 1, 2)
 	if err := r.Flush(); err == nil {
 		t.Fatal("disk failure not reported")
@@ -257,6 +260,7 @@ func TestPersistenceFailureRetriesLatestValuesWithoutDoubling(t *testing.T) {
 	if reportTest(t, r, 1, "", false).StorageError == "" {
 		t.Fatal("storage failure hidden")
 	}
+	now = now.Add(time.Hour)
 	r.count(id, true, 3, 4)
 	if err := os.Rename(dir+"-offline", dir); err != nil {
 		t.Fatal(err)
@@ -268,9 +272,13 @@ func TestPersistenceFailureRetriesLatestValuesWithoutDoubling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reopened.now = r.now
 	got := reportTest(t, reopened, 1, "", false)
 	if got.StorageError != "" || got.Summary.Upload != 14 || got.Summary.Download != 26 || got.History[0].Download != 26 {
 		t.Fatalf("retry lost or duplicated bytes: %+v", got)
+	}
+	if len(got.HourlyHistory) != 9 || got.HourlyHistory[6].Totals != (Totals{10, 20}) || got.HourlyHistory[7].Totals != (Totals{1, 2}) || got.HourlyHistory[8].Totals != (Totals{3, 4}) || got.HourlyUnallocated != (Totals{}) {
+		t.Fatalf("retry lost hourly records or merged hours: %+v", got)
 	}
 }
 
@@ -315,6 +323,7 @@ func TestUDPCountsBothDirectionsAndPreservesClosedTraffic(t *testing.T) {
 
 func TestConcurrentCountersReportsAndFlushes(t *testing.T) {
 	r := openTest(t)
+	r.now = func() time.Time { return time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC) }
 	id := r.Register("parallel", "/parallel")
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -332,6 +341,7 @@ func TestConcurrentCountersReportsAndFlushes(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			r.Sample()
 			_, _ = r.Report(7, "", false)
+			_, _ = r.Report(1, "", false)
 			if err := r.Flush(); err != nil {
 				t.Error(err)
 			}
@@ -345,7 +355,11 @@ func TestConcurrentCountersReportsAndFlushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reopened.now = r.now
 	if got := reportTest(t, reopened, 7, "", false).Summary; got.Upload != 8000 || got.Download != 16000 {
 		t.Fatalf("concurrent counters lost: %+v", got)
+	}
+	if got := reportTest(t, reopened, 1, "", false); len(got.HourlyHistory) != 3 || got.HourlyHistory[2].Totals != (Totals{8000, 16000}) || got.HourlyUnallocated != (Totals{}) {
+		t.Fatalf("concurrent hourly counters lost: %+v", got)
 	}
 }

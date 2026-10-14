@@ -10,6 +10,7 @@ import (
 
 var appsBucket = []byte("applications-v1")
 var daysBucket = []byte("daily-v1")
+var hoursBucket = []byte("hourly-v1")
 var metaBucket = []byte("metadata-v1")
 
 func (r *Recorder) database(fn func(*bolt.DB) error) error {
@@ -28,7 +29,7 @@ func (r *Recorder) database(fn func(*bolt.DB) error) error {
 func (r *Recorder) load() error {
 	return r.database(func(db *bolt.DB) error {
 		return db.Update(func(tx *bolt.Tx) error {
-			for _, name := range [][]byte{appsBucket, daysBucket, metaBucket} {
+			for _, name := range [][]byte{appsBucket, daysBucket, hoursBucket, metaBucket} {
 				if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 					return err
 				}
@@ -60,14 +61,22 @@ func (r *Recorder) load() error {
 			}); err != nil {
 				return err
 			}
-			return tx.Bucket(daysBucket).ForEach(func(key, value []byte) error {
-				var totals [2]Totals
-				if err := json.Unmarshal(value, &totals); err != nil {
+			for _, data := range []struct {
+				bucket []byte
+				rows   map[string][2]Totals
+			}{{daysBucket, r.days}, {hoursBucket, r.hours}} {
+				if err := tx.Bucket(data.bucket).ForEach(func(key, value []byte) error {
+					var totals [2]Totals
+					if err := json.Unmarshal(value, &totals); err != nil {
+						return err
+					}
+					data.rows[string(key)] = totals
+					return nil
+				}); err != nil {
 					return err
 				}
-				r.days[string(key)] = totals
-				return nil
-			})
+			}
+			return nil
 		})
 	})
 }
@@ -80,21 +89,26 @@ func (r *Recorder) Flush() error {
 	r.mu.Lock()
 	apps := make(map[string]appRecord, len(r.dirtyApps))
 	days := make(map[string][2]Totals, len(r.dirtyDays))
+	hours := make(map[string][2]Totals, len(r.dirtyHours))
 	for id := range r.dirtyApps {
 		apps[id] = *r.apps[id]
 	}
 	for key := range r.dirtyDays {
 		days[key] = r.days[key]
 	}
+	for key := range r.dirtyHours {
+		hours[key] = r.hours[key]
+	}
 	r.dirtyApps, r.dirtyDays = make(map[string]bool), make(map[string]bool)
+	r.dirtyHours = make(map[string]bool)
 	r.mu.Unlock()
-	if len(apps) == 0 && len(days) == 0 {
+	if len(apps) == 0 && len(days) == 0 && len(hours) == 0 {
 		return nil
 	}
 	saved := r.now()
 	err := r.database(func(db *bolt.DB) error {
 		return db.Update(func(tx *bolt.Tx) error {
-			for _, bucket := range [][]byte{appsBucket, daysBucket, metaBucket} {
+			for _, bucket := range [][]byte{appsBucket, daysBucket, hoursBucket, metaBucket} {
 				if tx.Bucket(bucket) == nil {
 					return fmt.Errorf("流量数据库缺少数据表")
 				}
@@ -108,13 +122,18 @@ func (r *Recorder) Flush() error {
 					return err
 				}
 			}
-			for key, day := range days {
-				value, err := json.Marshal(day)
-				if err != nil {
-					return err
-				}
-				if err := tx.Bucket(daysBucket).Put([]byte(key), value); err != nil {
-					return err
+			for _, data := range []struct {
+				bucket []byte
+				rows   map[string][2]Totals
+			}{{daysBucket, days}, {hoursBucket, hours}} {
+				for key, totals := range data.rows {
+					value, err := json.Marshal(totals)
+					if err != nil {
+						return err
+					}
+					if err := tx.Bucket(data.bucket).Put([]byte(key), value); err != nil {
+						return err
+					}
 				}
 			}
 			value, _ := json.Marshal(saved)
@@ -129,6 +148,9 @@ func (r *Recorder) Flush() error {
 		}
 		for key := range days {
 			r.dirtyDays[key] = true
+		}
+		for key := range hours {
+			r.dirtyHours[key] = true
 		}
 		r.storageError = fmt.Sprintf("流量历史保存失败，将自动重试：%v", err)
 		return err

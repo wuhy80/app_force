@@ -35,4 +35,10 @@ func TestTrafficAuthenticationValidationAndConfiguredApplications(t *testing.T) 
 	if response.Code != 200 {
 		t.Fatal(response.Body.String())
 	}
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Days != 1 || !report.IncludeDirect || len(report.History) != 1 || len(report.HourlyHistory) == 0 || report.HourlyHistory[len(report.HourlyHistory)-1].Hour != report.GeneratedAt.Format("2006-01-02T15:00") {
+		t.Fatalf("today response missing local hourly history: %+v", report)
+	}
 }

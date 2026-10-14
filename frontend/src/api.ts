@@ -25,6 +25,8 @@ export interface TrafficReport {
   generated_at: string; collected_since: string; saved_at: string | null; storage_error: string;
   days: number; include_direct: boolean; applications: TrafficApplication[]; summary: TrafficMetrics;
   history: { date: string; upload: number; download: number }[];
+  hourly_history?: { hour: string; upload: number; download: number }[];
+  hourly_unallocated?: { upload: number; download: number };
 }
 
 declare global {
