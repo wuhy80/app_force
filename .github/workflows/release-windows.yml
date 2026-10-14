@@ -2,8 +2,12 @@ name: Publish Windows release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/release-windows.yml'
   workflow_dispatch:
     inputs:
       tag:
@@ -20,6 +24,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -86,9 +91,12 @@ jobs:
               --verify-tag --draft --title "AppForce $RELEASE_TAG · Windows 桌面版" \
               --notes-file output/release/release-notes.md
           fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > output/release/remote-release.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\")" > output/release/remote-release.json
           python3 scripts/package-windows.py --verify-remote output/release/remote-release.json --output output/release
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          release_id=$(python3 -c 'import json; print(json.load(open("output/release/remote-release.json"))["id"])')
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false -f make_latest=true --jq '.html_url'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -99,3 +107,74 @@ jobs:
             output/release/BUILD-INFO.json
           if-no-files-found: ignore
           retention-days: 14
+
+  publish-existing-artifact:
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Locate verified build artifact for current version
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+          repository = os.environ['GITHUB_REPOSITORY']
+          version = re.search(r'const Version = "([^"]+)"', pathlib.Path('internal/model/model.go').read_text()).group(1)
+          tag = 'v'+version
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag)
+          commit = subprocess.check_output(['git', 'rev-parse', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+          artifacts = api(f'repos/{repository}/actions/artifacts?name=windows-release-{tag}&per_page=100')['artifacts']
+          matches = [a for a in artifacts if a['name'] == 'windows-release-'+tag and not a['expired']
+                     and a['workflow_run']['head_sha'] == commit]
+          assert matches, 'No retained build artifact matches the version tag'
+          artifact = max(matches, key=lambda a: a['created_at'])
+          run_id = artifact['workflow_run']['id']
+          required = {
+              'Validate release tag', 'Build Windows x64 with frontend and embedded Agents',
+              'Run host tests and static checks', 'Build Windows ARM64',
+              'Compile Windows tests for both architectures', 'Package binaries, corresponding source and licenses'
+          }
+          jobs = api(f'repos/{repository}/actions/runs/{run_id}/jobs')['jobs']
+          assert any(required <= {s['name'] for s in j['steps'] if s['conclusion'] == 'success'} for j in jobs), 'Build validation did not pass'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'run_id={run_id}\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'RELEASE_TAG={tag}\nRELEASE_COMMIT={commit}\n')
+          print(f'Reusing verified {tag} build from run {run_id}, source {commit}')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release-${{ env.RELEASE_TAG }}
+          path: output/recovery
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.build.outputs.run_id }}
+      - name: Verify retained artifact and publish its draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          info = json.loads(pathlib.Path('output/recovery/BUILD-INFO.json').read_text())
+          assert info['source_commit'] == os.environ['RELEASE_COMMIT']
+          assert 'v'+info['version'] == os.environ['RELEASE_TAG']
+          assert info['target_os'] == 'windows' and set(info['architectures']) == {'amd64', 'arm64'}
+          PY
+          (cd output/recovery/assets && sha256sum --check SHA256SUMS.txt)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\")" > output/recovery/remote-release.json
+          python3 scripts/package-windows.py --verify-remote output/recovery/remote-release.json --output output/recovery
+          release_id=$(python3 -c 'import json; r=json.load(open("output/recovery/remote-release.json")); assert r["draft"], "Release is already published"; print(r["id"])')
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false -f make_latest=true --jq '.html_url'
