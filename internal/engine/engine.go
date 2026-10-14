@@ -165,6 +165,9 @@ func (e *Engine) Stop() error {
 		e.samplingStop, e.samplingDone = nil, nil
 	}
 	err := e.instance.Close()
+	if isAlreadyClosedError(err) {
+		err = nil
+	}
 	e.cancel()
 	e.instance, e.traffic, e.cancel = nil, nil, nil
 	e.nodesByOutbound = nil
