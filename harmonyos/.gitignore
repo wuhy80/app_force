@@ -1,0 +1,15 @@
+/.idea/
+/.hvigor/
+/oh_modules/
+/build/
+/entry/oh_modules/
+/entry/build/
+/core/build/
+/entry/libs/
+/local.properties
+/signing/
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key

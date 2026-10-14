@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "AppForce 鸿蒙手机版"
+    },
+    {
+      "name": "app_tagline",
+      "value": "应用代理与节点管理"
+    },
+    {
+      "name": "mobile_edition",
+      "value": "鸿蒙手机版"
+    }
+  ]
+}

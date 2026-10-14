@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "appforce-harmonyos",
+  "version": "0.1.0",
+  "description": "AppForce 原生鸿蒙手机版",
+  "dependencies": {},
+  "devDependencies": {}
+}

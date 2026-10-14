@@ -220,8 +220,11 @@ internal/security/     HTTPS 设备证书
 internal/tray/         本机托盘控制、Windows 原生通知图标和消息循环
 internal/web/          嵌入的界面构建产物
 frontend/              Vue 3 + TypeScript
+harmonyos/             原生鸿蒙手机版、VPN 扩展与 Go 移动内核
 build/windows/         Windows 图标、权限和 DPI 清单生成
 deploy/                常驻服务模板
 ```
+
+原生鸿蒙 5 / 6 / NEXT 手机版在同一仓库的 `harmonyos/` 目录维护。已实现 ArkUI 界面、VPN 扩展、N-API 桥接和 Go 移动内核代码，并验证宿主机转发与桥接接口；鸿蒙 Go 工具链、DevEco 构建及真机验证尚未完成。构建前提和操作步骤见 [鸿蒙工程说明](harmonyos/README.md)，接口限制见 [鸿蒙移植评估](docs/harmonyos-port.md)。
 
 项目按 GPL-3.0-or-later 分发。sing-box 另有名称与关联声明限制，第三方许可说明见 [NOTICE.md](NOTICE.md)。

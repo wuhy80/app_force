@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "AppForce 鸿蒙应用模块",
+  "main": "",
+  "dependencies": {
+    "libappforce.so": "file:./src/main/cpp/types/libappforce"
+  }
+}
