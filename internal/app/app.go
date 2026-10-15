@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"appforce/internal/antigravity"
 	"appforce/internal/deploy"
 	"appforce/internal/engine"
 	"appforce/internal/model"
@@ -30,6 +31,7 @@ type App struct {
 	Token    string
 	Deployer *deploy.Manager
 	Startup  *startup.Manager
+	Accounts *antigravity.Manager
 }
 
 type Snapshot struct {
@@ -57,6 +59,10 @@ func Open(dir string) (*App, error) {
 	}
 	a := &App{store: s, config: c, Token: token, Engine: engine.Engine{CachePath: filepath.Join(dir, "engine-cache.db"), Recorder: recorder}}
 	a.Deployer = deploy.NewManager(a.saveDeployedDevice)
+	a.Accounts, err = antigravity.Open(filepath.Join(dir, "antigravity"), a.accountClient)
+	if err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 

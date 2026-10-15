@@ -127,7 +127,7 @@ func (a *App) Remote(ctx context.Context, id, method, path string, body io.Reade
 		return 0, nil, fmt.Errorf("远程请求路径无效")
 	}
 	allowed := false
-	for _, prefix := range []string{"/api/state", "/api/programs", "/api/processes", "/api/engine/", "/api/nodes/", "/api/rules", "/api/sources", "/api/settings", "/api/logs", "/api/traffic"} {
+	for _, prefix := range []string{"/api/state", "/api/programs", "/api/processes", "/api/engine/", "/api/nodes/", "/api/rules", "/api/sources", "/api/settings", "/api/logs", "/api/traffic", "/api/antigravity/native", "/api/antigravity/usage"} {
 		if u.Path == prefix || strings.HasPrefix(u.Path, strings.TrimSuffix(prefix, "/")+"/") {
 			allowed = true
 			break

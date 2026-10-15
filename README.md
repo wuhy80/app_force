@@ -20,6 +20,7 @@
 - SSH 自动部署：输入 Linux/Mac 主机、用户名和密码，自动识别平台、上传内置 Agent、安装后台服务并加入设备列表。
 - 设备 HTTPS 证书生成、Bearer 管理密钥、浏览器来源校验、敏感字段从状态接口移除。
 - 第三方应用目录：提供 Cockpit Tools 的介绍、项目主页和最新版本下载入口。
+- Antigravity 多账号管理：加密保存账号，本机或远程按用户切换，展示模型剩余额度、积分、重置时间及持久化 token 用量。
 
 ## 构建
 
@@ -188,6 +189,50 @@ sudo appforce --headless --data /var/lib/appforce \
 
 每台设备订阅、节点和程序规则独立。当前没有中心同步，也不会让远端流量经过 Windows。切换左上角设备后，订阅导入、程序选择、启停和日志操作作用于该设备。
 
+## Antigravity 账号与用量
+
+侧栏打开“AI 账号与用量”。账号列表保存在当前管理端，应用目标跟随左上角选择的设备。账号加密保存在配置目录的 `antigravity/accounts.enc`；备份时同时保留 `accounts.key`，缺少密钥时不会生成新密钥覆盖原账号。
+
+添加账号有三种方式：点击“Google 登录”完成浏览器授权；从 Antigravity / agy 读取当前登录；导入单个账号的凭据 JSON。更换客户端登录后再次导入，可以永久保存多个账号。默认使用公开的 Antigravity 桌面 OAuth 配置；自定义客户端可在页面下方配置。自动续期保留各账号原登录对应的客户端配置，不用其他账号的新配置覆盖它。
+
+Windows 选择“Antigravity 2.x / agy”会写入当前 Windows 用户的凭据管理器。macOS 使用该用户的登录钥匙串，Linux 使用该用户的 Secret Service 密钥环。旧版 IDE 选择“旧版 Antigravity IDE”，操作其已有 `state.vscdb`，切号前需要关闭 IDE。所有切换均读取原凭据并验证新凭据；失败时尝试恢复，只有验证和保存成功后才显示已应用。已运行的桌面应用或 CLI 会话可能保留旧账号，切换后重启客户端或创建新会话。
+
+从 Windows 管理 Linux 时，先在设备管理中部署/更新 Agent，再切到该设备，填写实际运行 `agy` 的 Linux 用户名。root Agent 通过当前二进制中的用户组件执行操作，不把凭据写进 root 的密钥环。系统密钥环模式需要 `libsecret-tools`、目标用户的 D-Bus 会话及已解锁的 Secret Service。
+
+纯 SSH、无桌面的 Linux 可选择“无桌面 Linux · appforce-agy”。目标机器需要已有 `agy`，以及 `dbus-run-session`、`secret-tool`、`gnome-keyring-daemon`。Debian/Ubuntu 可安装依赖：
+
+```bash
+sudo apt-get install dbus libsecret-tools gnome-keyring
+```
+
+点击账号的“应用到”后，会在指定用户下部署 `~/.local/bin/appforce-agy`。它在独立 D-Bus 和临时密钥环中加载账号，避免依赖官方 CLI 尚有兼容问题的文件凭据回退。随后用以下入口启动（参数原样传给 `agy`）：
+
+```bash
+~/.local/bin/appforce-agy
+~/.local/bin/appforce-agy --print "你的任务"
+```
+
+该入口的凭据文件在目标用户的 `~/.config/AppForce/antigravity-cli/`，仅供该用户读取。直接启动 `agy` 仍使用普通系统登录。部署时校验独立密钥环的实际读写；目标系统没有依赖或密钥环无法运行时，会明确报错。真实 `agy` 版本的登录、续期和会话行为仍需要目标机器验证。
+
+用量展示包括模型组/模型剩余百分比、重置时间、积分，以及 token 消耗。额度查询通过当前管理端的代理发出；远端应用账号时也需要远端能连接 Google。数据来自账号服务，不将剩余额度百分比转换为 token。
+
+Token 采集读取所选用户的以下会话日志，每个会话优先使用 `transcript.jsonl`，不存在时使用 `transcript_full.jsonl`：
+
+- `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/`
+- `~/.gemini/antigravity/brain/*/.system_generated/logs/`
+
+页面每 15 秒读取，已经通过本工具管理的目标在后台每 30 秒采集。仅保存响应 ID、时间、模型、账号归属和 token 计数，不保存提示词和回复正文。按设备/用户、账号和模型查看今天、近 7/30/90 天及累计用量；今天按小时展示，从 08:00 或更早的用量记录开始。输入、输出、缓存读取、思考计数分开展示，报告总数遵循客户端字段，不再次叠加已包含的缓存或思考。重复记录、进行中的流式记录和会话累计结果不会重复计入。
+
+缺少 token 或时间的日志不推算消耗，页面会提示无法识别。没有日志账号时按 AppForce 记录的切号时段归属，开始管理前的记录为“未归属”；客户端内自行切号后需重新导入确认。未退出的旧会话仍可能使用原账号，这类日志的账号归属不能仅凭系统凭据完全确认。历史覆盖已采集的记录，不代表官方完整账单。客户端日志/服务接口变更后可能需要更新适配。
+
+也可选择实际账号后导入 JSON 数组或 JSONL 的逐次用量记录。标准格式如下，`id` 必须是稳定、唯一的响应 ID；省略 `total_tokens` 时按输入和输出求和，已有官方总数时应保留它：
+
+```json
+{"id":"response-001","time":"2026-10-14T10:00:00+08:00","model":"gemini-model","input_tokens":1000,"output_tokens":200,"cached_tokens":800,"thinking_tokens":100,"total_tokens":1200}
+```
+
+账号存储、适配器、管理界面和统计为本项目实现，没有合并 Cockpit Tools 源码。公开 OAuth 配置的来源和 MIT 许可见 [第三方声明](docs/third-party-notices.md)。
+
 ## 常驻运行
 
 - Linux：提供 [deploy/appforce.service](deploy/appforce.service)。将可执行文件放到 `/usr/local/bin/appforce` 后，安装到 `/etc/systemd/system/`。模板使用回环管理，可通过 SSH 隧道管理。
@@ -226,6 +271,7 @@ internal/program/      三平台程序目录浏览
 internal/app/          配置事务、订阅、规则、远程管理
 internal/api/          带鉴权的管理 API
 internal/store/        原子 JSON 保存与密钥
+internal/antigravity/  账号加密存储、OAuth、跨用户凭据适配与 token 采集
 internal/security/     HTTPS 设备证书
 internal/tray/         本机托盘控制、Windows 原生通知图标和消息循环
 internal/web/          嵌入的界面构建产物

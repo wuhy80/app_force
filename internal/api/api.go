@@ -25,6 +25,7 @@ import (
 
 func Handler(a *app.App) http.Handler {
 	mux := http.NewServeMux()
+	accountRoutes(mux, a)
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) { send(w, a.Snapshot()) })
 	mux.HandleFunc("GET /api/deployment/platforms", func(w http.ResponseWriter, r *http.Request) { send(w, agentbundle.Platforms()) })
 	mux.HandleFunc("POST /api/deployment/check", func(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +232,11 @@ func Handler(a *app.App) http.Handler {
 					return
 				}
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, subscription.MaxSize+65536)
+			limit := int64(subscription.MaxSize + 65536)
+			if r.Method == "POST" && (r.URL.Path == "/api/antigravity/usage" || strings.HasSuffix(r.URL.Path, "/antigravity/usage")) {
+				limit = 32 << 20
+			} // JSON escaping of a 16 MB JSONL file
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		mux.ServeHTTP(w, r)
 	})

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"appforce/internal/antigravity"
 	"appforce/internal/api"
 	"appforce/internal/app"
 	"appforce/internal/deploy"
@@ -37,7 +38,18 @@ func main() {
 	initTLS := flag.Bool("init-tls", false, "生成设备 HTTPS 证书，显示指纹并退出")
 	pairingInfo := flag.Bool("pairing-info", false, "为自动部署准备证书并输出管理凭据 JSON")
 	verifyAgent := flag.Bool("verify-agent", false, "验证本机 HTTPS Agent 已启动并退出")
+	nativeAccount := flag.String("antigravity-native", "", "在当前用户会话中读写 Antigravity 凭据（内部组件）")
+	nativeClient := flag.String("antigravity-client", "system", "凭据类型：system、legacy-ide 或 managed-cli")
 	flag.Parse()
+	if *nativeAccount != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := antigravity.NativeHelper(ctx, *nativeAccount, *nativeClient, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "AppForce account: "+err.Error())
+			os.Exit(antigravity.NativeHelperExitCode(err))
+		}
+		return
+	}
 	*data, err = filepath.Abs(*data)
 	if err != nil {
 		log.Fatal(err)
@@ -46,6 +58,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer a.Accounts.Close()
 	if *showToken {
 		fmt.Println(a.Token)
 		return

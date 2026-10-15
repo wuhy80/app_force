@@ -17,6 +17,28 @@ export interface Process { pid: number; parent_pid: number; name: string; path: 
 export interface ProgramEntry { name: string; path: string; directory: boolean }
 export interface ProgramDirectory { directory: string; parent: string; entries: ProgramEntry[] }
 export interface LogEntry { time: string; level: string; message: string }
+export interface AccountQuota {
+  fetched_at: string; tier?: string; project?: string;
+  buckets: { id: string; name: string; window?: string; remaining?: number; reset_time?: string }[];
+  credits: { type: string; amount: string }[];
+}
+export interface AIAccount {
+  id: string; email: string; name: string; created_at: string; updated_at: string; expiry: string;
+  refreshable: boolean; quota?: AccountQuota; quota_error?: string;
+}
+export interface AccountTargetStatus {
+  target: { user: string; client: string }; account_id: string; email: string;
+  available: boolean; message: string; needs_restart: boolean;
+}
+export interface TokenMetrics { input_tokens: number; output_tokens: number; cached_tokens: number; thinking_tokens: number; total_tokens: number; requests: number }
+export interface TokenReport {
+  generated_at: string; days: number; collected_at?: string; files: number; warnings: string[];
+  summary: TokenMetrics; lifetime: TokenMetrics;
+  accounts: ({ id: string; name: string } & TokenMetrics)[];
+  models: ({ id: string; name: string } & TokenMetrics)[];
+  history: ({ time: string } & TokenMetrics)[];
+}
+export interface AccountOAuthSession { id: string; url?: string; status: string; email?: string; error?: string; expires_at: string }
 export interface TrafficMetrics {
   upload: number; download: number; lifetime_upload: number; lifetime_download: number;
   upload_rate: number; download_rate: number; active_connections: number;

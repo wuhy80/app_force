@@ -25,6 +25,7 @@ func setup(t *testing.T) (*app.App, http.Handler) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Stop() })
+	t.Cleanup(a.Accounts.Close)
 	return a, Handler(a)
 }
 func call(handler http.Handler, method, path, token, body string) *httptest.ResponseRecorder {
