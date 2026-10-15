@@ -35,12 +35,11 @@ windows: agents ## 交叉编译 Windows x64 桌面版，输出 bin/AppForce.exe
 	go run ./build/windows
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -tags desktop,production,$(TAGS) -ldflags "-H windowsgui" -o bin/AppForce.exe ./cmd/appforce
 
-test: ## 运行 Go 测试并启用竞态检测
+test: frontend ## 构建前端并运行 Go 测试，启用竞态检测
 	go test -race -tags $(TAGS) ./...
 
-check: ## 执行 Go 静态检查和前端构建检查
+check: frontend ## 构建前端并执行 Go 静态检查
 	go vet -tags $(TAGS) ./...
-	npm --prefix frontend run build
 
 clean: ## 删除 bin 构建产物和生成的 Windows 资源文件
 	rm -rf bin

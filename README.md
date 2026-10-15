@@ -26,6 +26,8 @@
 
 在项目根目录执行 `make help`（或直接执行 `make`），查看全部命令、产物路径和 Windows/macOS/Linux 编译示例。构建命令会自动安装前端依赖并构建界面。
 
+`internal/web/dist/` 是前端构建产物，不纳入 Git。`make build`、`make desktop`、`make windows`、`make test` 和 `make check` 会先生成界面资源；直接执行 `go build`、`go test` 或 `go vet` 前，请先执行 `make frontend`，供 `go:embed` 嵌入。
+
 需要 Go 1.25.5 或更高版本、Node.js 22.12 或更高版本。Go 开启自动工具链下载时会按 `go.mod` 获取对应工具链。
 
 ```bash
