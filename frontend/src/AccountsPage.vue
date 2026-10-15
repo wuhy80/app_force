@@ -13,7 +13,7 @@ const targetUser = ref(localStorage.getItem(userKey) || ''), client = ref(['syst
 const importName = ref(''), credential = ref(''), search = ref('')
 const oauth = ref<AccountOAuthSession>(), oauthConfig = ref({ client_id: '', client_secret: '', cloud: 'daily', has_client_secret: false })
 const upload = ref<HTMLInputElement>(), usageUpload = ref<HTMLInputElement>()
-let alive = true, generation = 0, poll: ReturnType<typeof setInterval> | undefined, oauthPoll: ReturnType<typeof setInterval> | undefined
+let alive = true, generation = 0, statusGeneration = 0, poll: ReturnType<typeof setInterval> | undefined, oauthPoll: ReturnType<typeof setInterval> | undefined
 const selected = computed(() => accounts.value.find(a => a.id === selection.value))
 const filtered = computed(() => accounts.value.filter(a => `${a.email} ${a.name}`.toLowerCase().includes(search.value.toLowerCase())))
 const target = () => ({ user: targetUser.value.trim(), client: client.value })
@@ -44,8 +44,9 @@ async function loadUsage() {
   finally { if (alive) { loadingUsage.value = false; if (current !== generation) void loadUsage() } }
 }
 async function loadStatus() {
+  const current = ++statusGeneration
   const next = await request<AccountTargetStatus>('GET', `${props.endpoint}/native/status?${new URLSearchParams(target())}`)
-  if (alive) status.value = next
+  if (alive && current === statusGeneration) status.value = next
 }
 async function action(work: () => Promise<void>) {
   if (busy.value) return
@@ -76,8 +77,9 @@ async function importAccount() {
 }
 async function switchAccount(account: AIAccount) {
   await action(async () => {
+    const current = ++statusGeneration
     const next = await request<AccountTargetStatus>('POST', `/api/antigravity/accounts/${account.id}/switch`, currentTarget())
-    if (alive) { rememberTarget(); status.value = next; message.value = next.message; await loadAccounts() }
+    if (alive && current === statusGeneration) { rememberTarget(); status.value = next; message.value = next.message; await loadAccounts() }
   })
 }
 async function refreshQuota(account: AIAccount) {
@@ -141,8 +143,8 @@ async function readFile(event: Event, kind: 'account' | 'usage') {
   } catch (e) { fail(e) } finally { input.value = '' }
 }
 watch([days, selection], () => { generation++; usage.value = undefined; void loadUsage() })
-watch(client, () => { status.value = undefined; generation++; usage.value = undefined; void loadUsage() })
-watch(targetUser, () => { status.value = undefined; generation++; usage.value = undefined })
+watch(client, () => { statusGeneration++; status.value = undefined; generation++; usage.value = undefined; void loadUsage() })
+watch(targetUser, () => { statusGeneration++; status.value = undefined; generation++; usage.value = undefined })
 onMounted(async () => {
   try { await Promise.all([loadAccounts(), loadConfig(), loadStatus()]) } catch (e) { if (alive) fail(e) }
   if (!alive) return
@@ -158,7 +160,7 @@ onUnmounted(() => { alive = false; generation++; clearInterval(poll); clearInter
     <div v-if="message" class="alert success" role="status">{{ message }}</div>
     <section class="account-target" aria-label="应用账号的设备和用户">
       <div><span class="eyebrow">应用到当前设备</span><h2>{{ deviceLabel }}</h2><p>{{ status?.email || status?.message || '读取账号状态…' }}</p></div>
-      <form class="target-fields" @submit.prevent="refreshTarget"><label>运行用户<input v-model="targetUser" :placeholder="os === 'windows' ? '当前 Windows 用户' : '实际运行 agy / Antigravity 的用户名'" autocomplete="off" /></label><label>客户端<select v-model="client"><option value="system">Antigravity 2.x / agy</option><option v-if="os === 'linux'" value="managed-cli">无桌面 Linux · appforce-agy</option><option value="legacy-ide">旧版 Antigravity IDE</option></select></label><button class="secondary" :disabled="busy">读取状态</button></form>
+      <form class="target-fields" @submit.prevent="refreshTarget"><label>运行用户<input v-model="targetUser" :disabled="busy" :placeholder="os === 'windows' ? '当前 Windows 用户' : '实际运行 agy / Antigravity 的用户名'" autocomplete="off" /></label><label>客户端<select v-model="client" :disabled="busy"><option value="system">Antigravity 2.x / agy</option><option v-if="os === 'linux'" value="managed-cli">无桌面 Linux · appforce-agy</option><option value="legacy-ide">旧版 Antigravity IDE</option></select></label><button class="secondary" :disabled="busy">读取状态</button></form>
     </section>
     <p class="target-note">{{ os === 'windows' ? '账号应用到当前 Windows 登录用户。' : '远程 Agent 的 root 身份与 CLI 用户不同，请填写实际使用的用户名。' }}{{ client === 'legacy-ide' ? '旧版 IDE 切号前请先关闭应用。' : client === 'managed-cli' ? '应用账号后，使用 ~/.local/bin/appforce-agy 启动 CLI。需要 dbus、libsecret-tools 和 gnome-keyring。' : '切号后请重启桌面客户端或新建 CLI 会话。' }}</p>
     <div class="section-toolbar"><h2>已保存账号 <span class="muted">{{ accounts.length }}</span></h2><div class="account-toolbar"><input v-model="search" class="search-input" placeholder="搜索邮箱或名称" aria-label="搜索账号" /><button class="text-button" :disabled="busy" @click="capture">导入当前登录</button><button class="text-button" :disabled="busy" @click="startLogin">Google 登录</button></div></div>
