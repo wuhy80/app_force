@@ -74,7 +74,7 @@ func accountRoutes(mux *http.ServeMux, a *app.App) {
 		}
 	})
 	mux.HandleFunc("POST /api/antigravity/oauth", func(w http.ResponseWriter, r *http.Request) {
-		session, err := a.Accounts.StartOAuth()
+		session, err := a.StartAccountOAuth()
 		if err != nil {
 			fail(w, err)
 			return
@@ -83,6 +83,17 @@ func accountRoutes(mux *http.ServeMux, a *app.App) {
 	})
 	mux.HandleFunc("GET /api/antigravity/oauth/{id}", func(w http.ResponseWriter, r *http.Request) {
 		session, err := a.Accounts.OAuthStatus(r.PathValue("id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		send(w, session)
+	})
+	mux.HandleFunc("POST /api/antigravity/oauth/{id}/open", func(w http.ResponseWriter, r *http.Request) {
+		result(w, a.OpenAccountOAuthBrowser(r.PathValue("id")))
+	})
+	mux.HandleFunc("DELETE /api/antigravity/oauth/{id}", func(w http.ResponseWriter, r *http.Request) {
+		session, err := a.Accounts.CancelOAuth(r.PathValue("id"))
 		if err != nil {
 			fail(w, err)
 			return

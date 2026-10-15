@@ -160,22 +160,22 @@ func outboundNodes(c model.Config) ([]model.Node, error) {
 	}
 	nodes := []model.Node{selected}
 	seen := map[string]bool{selected.ID: true}
-	if c.Settings.Mode == "tun" {
-		for _, rule := range c.Rules {
-			if !rule.Enabled || rule.NodeID == "" || seen[rule.NodeID] {
-				continue
-			}
-			node, ok := c.Node(rule.NodeID)
-			if !ok {
-				name := rule.Name
-				if name == "" {
-					name = rule.Path
-				}
-				return nil, fmt.Errorf("程序 %s 指定的节点不存在，请重新选择节点或跟随默认节点", name)
-			}
-			nodes = append(nodes, node)
-			seen[node.ID] = true
+	for _, rule := range c.Rules {
+		// Account authorization also needs Antigravity's explicit node when
+		// only the local mixed proxy is running.
+		if !rule.Enabled || (c.Settings.Mode != "tun" && !model.IsAntigravityProgram(rule.Path)) || rule.NodeID == "" || seen[rule.NodeID] {
+			continue
 		}
+		node, ok := c.Node(rule.NodeID)
+		if !ok {
+			name := rule.Name
+			if name == "" {
+				name = rule.Path
+			}
+			return nil, fmt.Errorf("程序 %s 指定的节点不存在，请重新选择节点或跟随默认节点", name)
+		}
+		nodes = append(nodes, node)
+		seen[node.ID] = true
 	}
 	return nodes, nil
 }

@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
-	"net/url"
 	"time"
 
 	"appforce/internal/antigravity"
+	"appforce/internal/authbrowser"
+	"appforce/internal/model"
 )
 
 type AccountTarget struct {
@@ -18,16 +21,71 @@ type AccountTarget struct {
 }
 
 func (a *App) accountClient() *http.Client {
-	a.mu.Lock()
-	running := a.Engine.Snapshot().Running
-	port := a.config.Settings.MixedPort
-	a.mu.Unlock()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if running {
-		address, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
-		transport.Proxy = http.ProxyURL(address)
+	transport.Proxy = nil
+	dial, err := a.accountDialer()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if err != nil {
+			return nil, &antigravity.NetworkError{Message: err.Error()}
+		}
+		return dial(ctx, network, address)
 	}
 	return &http.Client{Transport: transport, Timeout: 20 * time.Second}
+}
+
+func accountNode(c model.Config) (model.Node, error) {
+	id := c.SelectedNodeID
+	found := false
+	for _, rule := range c.Rules {
+		if !rule.Enabled || !model.IsAntigravityProgram(rule.Path) {
+			continue
+		}
+		next := rule.NodeID
+		if next == "" {
+			next = c.SelectedNodeID
+		}
+		if found && next != id {
+			return model.Node{}, fmt.Errorf("多个 Antigravity 程序规则使用了不同节点，请先将它们设置为同一代理节点")
+		}
+		id, found = next, true
+	}
+	node, ok := c.Node(id)
+	if !ok {
+		return model.Node{}, fmt.Errorf("Antigravity 的代理节点不存在，请先选择有效节点")
+	}
+	return node, nil
+}
+
+func (a *App) accountDialer() (func(context.Context, string, string) (net.Conn, error), error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.Engine.Snapshot().Running {
+		return nil, fmt.Errorf("代理未启动，请先启动 Antigravity 的代理后再添加授权、导入或刷新账号")
+	}
+	node, err := accountNode(a.config)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		return a.Engine.DialNodeContext(ctx, node.ID, network, address)
+	}, nil
+}
+
+func (a *App) StartAccountOAuth() (antigravity.OAuthSession, error) {
+	if _, err := a.accountDialer(); err != nil {
+		return antigravity.OAuthSession{}, err
+	}
+	return a.Accounts.StartOAuth()
+}
+
+func (a *App) OpenAccountOAuthBrowser(id string) error {
+	dial, err := a.accountDialer()
+	if err != nil {
+		return err
+	}
+	return a.Accounts.OpenOAuthBrowser(id, func(address string) (io.Closer, error) {
+		return authbrowser.Open(address, dial)
+	})
 }
 
 func (a *App) SwitchAccount(ctx context.Context, id string, target AccountTarget) (antigravity.TargetStatus, error) {

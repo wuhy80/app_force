@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"sync"
@@ -76,6 +77,7 @@ type Engine struct {
 	instance        *box.Box
 	traffic         *trafficcontrol.Manager
 	nodesByOutbound map[string]model.NodeView
+	nodeConnections map[net.Conn]struct{}
 	cancel          context.CancelFunc
 	status          Status
 	Logs            Logs
@@ -152,6 +154,10 @@ func (e *Engine) Start(c model.Config) error {
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	for connection := range e.nodeConnections {
+		_ = connection.Close()
+	}
+	e.nodeConnections = nil
 	if e.instance == nil {
 		e.status.Running = false
 		if e.Recorder != nil {

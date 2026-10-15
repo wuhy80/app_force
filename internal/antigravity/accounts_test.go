@@ -278,3 +278,97 @@ func TestOAuthStatePKCEAndCallback(t *testing.T) {
 		t.Fatal("OAuth polling exposes URL or incorrect result")
 	}
 }
+
+func TestDefaultOAuthLoginNeedsNoManualTokenAndCanBeCancelled(t *testing.T) {
+	m := newManager(t, t.TempDir())
+	session, err := m.StartOAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authURL, err := url.Parse(session.URL)
+	if err != nil || authURL.Host != "accounts.google.com" || authURL.Query().Get("client_id") == "" || authURL.Query().Get("client_secret") != "" {
+		t.Fatal("default browser login is unavailable or exposes client secret")
+	}
+	if cancelled, err := m.CancelOAuth(session.ID); err != nil || cancelled.Status != "cancelled" || cancelled.URL != "" {
+		t.Fatal("login was not cancelled")
+	}
+	client := &http.Client{Timeout: time.Second}
+	if response, err := client.Get(authURL.Query().Get("redirect_uri")); err == nil {
+		response.Body.Close()
+		t.Fatal("cancelled callback still listening")
+	}
+	if len(m.List()) != 0 {
+		t.Fatal("cancelling browser login changed saved accounts")
+	}
+	session, err = m.StartOAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ = url.Parse(session.URL)
+	query := authURL.Query()
+	response, err := client.Get(query.Get("redirect_uri") + "?" + url.Values{"state": {query.Get("state")}, "error": {"access_denied"}}.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	view, err := m.OAuthStatus(session.ID)
+	if err != nil || view.Status != "failed" || len(m.List()) != 0 {
+		t.Fatal("denied browser authorization was not reported without adding an account")
+	}
+}
+
+func TestOAuthCannotCancelOrReplaceAnAccountBeingSaved(t *testing.T) {
+	m := newManager(t, t.TempDir())
+	entered, release := make(chan struct{}), make(chan struct{})
+	base := providerClient().Transport
+	m.client = func() *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host == "oauth2.googleapis.com" {
+				close(entered)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			}
+			return base.RoundTrip(r)
+		})}
+	}
+	session, err := m.StartOAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(session.URL)
+	query := authURL.Query()
+	finished := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		response, err := client.Get(query.Get("redirect_uri") + "?" + url.Values{"state": {query.Get("state")}, "code": {"fixture-code"}}.Encode())
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				err = fmt.Errorf("callback status %d", response.StatusCode)
+			}
+		}
+		finished <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback never began token exchange")
+	}
+	if _, err := m.CancelOAuth(session.ID); err == nil {
+		t.Error("in-flight account save could be cancelled")
+	}
+	if _, err := m.StartOAuth(); err == nil {
+		t.Error("in-flight account save could be replaced")
+	}
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	view, err := m.CancelOAuth(session.ID)
+	if err != nil || view.Status != "succeeded" || len(m.List()) != 1 {
+		t.Fatal("completed account was cancelled or lost")
+	}
+}

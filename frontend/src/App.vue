@@ -11,7 +11,7 @@ type Page = 'programs' | 'nodes' | 'connections' | 'traffic' | 'accounts' | 'dev
 const pages: { id: Page; label: string; icon: string }[] = [
   { id: 'programs', label: '程序代理', icon: '▦' }, { id: 'nodes', label: '订阅与节点', icon: '◈' },
   { id: 'connections', label: '实时连接', icon: '⇄' }, { id: 'traffic', label: '流量统计', icon: '▥' },
-  { id: 'accounts', label: 'AI 账号与用量', icon: '◎' },
+  { id: 'accounts', label: 'Antigravity', icon: '◎' },
   { id: 'devices', label: '设备管理', icon: '▣' },
   { id: 'apps', label: '第三方应用', icon: '↗' },
   { id: 'settings', label: '代理设置', icon: '⚙' }, { id: 'logs', label: '运行日志', icon: '≡' },

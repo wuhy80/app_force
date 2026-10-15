@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,7 +33,11 @@ func requestJSON(ctx context.Context, client *http.Client, method, endpoint, tok
 	defer copyClient.CloseIdleConnections()
 	response, err := copyClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("无法连接 Google 账号服务，请检查代理和网络")
+		var networkError *NetworkError
+		if errors.As(err, &networkError) {
+			return networkError
+		}
+		return fmt.Errorf("无法通过 Antigravity 的代理连接 Google 账号服务（%s），请检查该代理节点和网络", req.URL.Hostname())
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

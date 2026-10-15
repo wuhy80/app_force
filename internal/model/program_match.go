@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// IsAntigravityProgram identifies saved application rules independently of the
+// controller's OS, including a remote Windows installation or macOS app bundle.
+func IsAntigravityProgram(path string) bool {
+	path = strings.ToLower(strings.ReplaceAll(path, `\`, "/"))
+	name := path[strings.LastIndex(path, "/")+1:]
+	return name == "antigravity.exe" || name == "antigravity ide.exe" || name == "antigravity" || name == "agy" || name == "antigravity.app" || strings.Contains(path, "/antigravity.app/")
+}
+
 // RuleView describes the effective scope without persisting generated matchers.
 type RuleView struct {
 	Rule

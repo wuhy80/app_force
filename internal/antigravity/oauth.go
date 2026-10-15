@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +28,14 @@ type oauthPending struct {
 	server  *http.Server
 	timer   *time.Timer
 	claimed bool
+	browser io.Closer
+}
+
+func (p *oauthPending) closeBrowser() {
+	if p.browser != nil {
+		_ = p.browser.Close()
+		p.browser = nil
+	}
 }
 
 func randomURLValue() (string, error) {
@@ -69,11 +78,19 @@ func (m *Manager) StartOAuth() (OAuthSession, error) {
 	view := OAuthSession{ID: id, URL: "https://accounts.google.com/o/oauth2/v2/auth?" + values.Encode(), Status: "waiting", ExpiresAt: time.Now().Add(10 * time.Minute)}
 	pending := &oauthPending{view: view}
 	m.oauthMu.Lock()
+	for _, old := range m.oauthSessions {
+		if old.view.Status == "waiting" && old.claimed {
+			m.oauthMu.Unlock()
+			listener.Close()
+			return OAuthSession{}, fmt.Errorf("正在保存 Google 授权结果，请稍候")
+		}
+	}
 	// Only one active browser login. Abandoned callbacks are closed immediately.
 	for _, old := range m.oauthSessions {
 		if old.view.Status == "waiting" {
 			old.view.Status = "cancelled"
 			old.timer.Stop()
+			old.closeBrowser()
 			_ = old.server.Close()
 		}
 	}
@@ -122,6 +139,7 @@ func (m *Manager) StartOAuth() (OAuthSession, error) {
 		}
 		m.oauthMu.Lock()
 		pending.timer.Stop()
+		pending.closeBrowser()
 		if loginErr != nil {
 			pending.view.Status = "failed"
 			pending.view.Error = loginErr.Error()
@@ -147,6 +165,7 @@ func (m *Manager) StartOAuth() (OAuthSession, error) {
 		if pending.view.Status == "waiting" {
 			pending.view.Status = "expired"
 		}
+		pending.closeBrowser()
 		m.oauthMu.Unlock()
 		_ = pending.server.Close()
 	})
@@ -166,12 +185,55 @@ func (m *Manager) OAuthStatus(id string) (OAuthSession, error) {
 	return OAuthSession{}, fmt.Errorf("登录会话不存在或 AppForce 已重启")
 }
 
+// OpenOAuthBrowser accepts only the manager's current authorization URL; the
+// API cannot use the browser launcher to open an arbitrary supplied address.
+func (m *Manager) OpenOAuthBrowser(id string, open func(string) (io.Closer, error)) error {
+	m.oauthMu.Lock()
+	defer m.oauthMu.Unlock()
+	pending := m.oauthSessions[id]
+	if pending == nil || pending.view.Status != "waiting" || pending.claimed {
+		return fmt.Errorf("授权会话已结束或正在保存，请返回 AppForce 查看状态")
+	}
+	pending.closeBrowser()
+	browser, err := open(pending.view.URL)
+	if err != nil {
+		return err
+	}
+	pending.browser = browser
+	return nil
+}
+
+// CancelOAuth closes an abandoned callback without changing existing accounts.
+// Once Google has returned a code, let the exchange finish before starting or
+// cancelling another login so a completed account cannot appear after cancel.
+func (m *Manager) CancelOAuth(id string) (OAuthSession, error) {
+	m.oauthMu.Lock()
+	defer m.oauthMu.Unlock()
+	pending := m.oauthSessions[id]
+	if pending == nil {
+		return OAuthSession{}, fmt.Errorf("登录会话不存在或 AppForce 已重启")
+	}
+	if pending.view.Status == "waiting" {
+		if pending.claimed {
+			return OAuthSession{}, fmt.Errorf("正在保存 Google 授权结果，请稍候")
+		}
+		pending.view.Status = "cancelled"
+		pending.timer.Stop()
+		pending.closeBrowser()
+		_ = pending.server.Close()
+	}
+	view := pending.view
+	view.URL = ""
+	return view, nil
+}
+
 func (m *Manager) Close() {
 	m.closeOnce.Do(func() { m.collectorCancel(); <-m.collectorDone })
 	m.oauthMu.Lock()
 	defer m.oauthMu.Unlock()
 	for _, session := range m.oauthSessions {
 		session.timer.Stop()
+		session.closeBrowser()
 		_ = session.server.Close()
 	}
 }
