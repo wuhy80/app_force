@@ -14,10 +14,122 @@ import (
 type fakeDriver struct {
 	activate func([]byte) error
 	close    func() error
+	check    func(*Policy) error
 }
 
 func (d fakeDriver) Activate(b []byte) error { return d.activate(b) }
 func (d fakeDriver) Close() error            { return d.close() }
+func (d fakeDriver) Check(p *Policy) error {
+	if d.check != nil {
+		return d.check(p)
+	}
+	return nil
+}
+
+func TestInitialHealthFailureRollsBackCapture(t *testing.T) {
+	closed := false
+	d := fakeDriver{
+		activate: func([]byte) error { return nil },
+		close:    func() error { closed = true; return nil },
+		check:    func(*Policy) error { return fmt.Errorf("dynamic session was discarded") },
+	}
+	s, err := start(context.Background(), testPolicy(t), d, nil, nil, nil)
+	if err == nil || s != nil || !closed {
+		t.Fatal("reported a running proxy without active filters")
+	}
+}
+
+func TestHealthReportsLostListener(t *testing.T) {
+	d := fakeDriver{activate: func([]byte) error { return nil }, close: func() error { return nil }}
+	s, err := start(context.Background(), testPolicy(t), d, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Check(); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.listeners[0].Close()
+	// Closing the listener wakes its Accept loop. Wait for that concrete failure
+	// to be recorded instead of assuming goroutine scheduling has already run.
+	deadline := time.Now().Add(time.Second)
+	for {
+		if s.Check() != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lost transparent listener still reported healthy")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestTrackedTCPHalfClosePreservesResponseAndTracking(t *testing.T) {
+	p := testPolicy(t)
+	var address string
+	d := fakeDriver{activate: func(b []byte) error {
+		address = fmt.Sprintf("127.0.0.1:%d", binary.LittleEndian.Uint16(b[24:]))
+		return nil
+	}, close: func() error { return nil }}
+	halfClosed := make(chan error, 1)
+	release := make(chan struct{})
+	s, err := start(context.Background(), p, d, func(net.Conn) ([]byte, []byte, error) {
+		return contextBytes(p, 1, p.Rules[0].AppID, false), []byte("records"), nil
+	},
+		func(ctx context.Context, c net.Conn, _ Redirect) {
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+			body, err := io.ReadAll(c)
+			if err != nil || string(body) != "request" {
+				halfClosed <- fmt.Errorf("request ended incorrectly: %q, %v", body, err)
+				return
+			}
+			if _, err = c.Write([]byte("response after request EOF")); err != nil {
+				halfClosed <- err
+				return
+			}
+			cw, ok := c.(interface{ CloseWrite() error })
+			if !ok {
+				halfClosed <- fmt.Errorf("tracking wrapper lost TCP half-close")
+				return
+			}
+			halfClosed <- cw.CloseWrite()
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}, func(err error) { t.Error(err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	defer close(release)
+	connection, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err = connection.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err = connection.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(connection)
+	if err != nil || string(body) != "response after request EOF" {
+		t.Fatalf("half-close truncated response: %q %v", body, err)
+	}
+	if err = <-halfClosed; err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	active := len(s.connections)
+	s.mu.Unlock()
+	if active != 1 {
+		t.Fatal("half-close removed live connection from stop tracking")
+	}
+}
 
 func TestServerStartsListenersBeforeCaptureAndRemovesCaptureFirst(t *testing.T) {
 	p := testPolicy(t)

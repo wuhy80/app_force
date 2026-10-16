@@ -2,8 +2,8 @@ package wfp
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"sync"
@@ -28,7 +28,8 @@ type RouteFunc func(context.Context, net.Conn, Redirect)
 
 type Server struct {
 	mu          sync.Mutex
-	device      io.Closer
+	device      driver
+	policy      *Policy
 	listeners   []net.Listener
 	connections map[net.Conn]struct{}
 	closed      bool
@@ -36,11 +37,13 @@ type Server struct {
 	wg          sync.WaitGroup
 	closeOnce   sync.Once
 	closeErr    error
+	failure     error
 }
 
 type driver interface {
-	io.Closer
+	Close() error
 	Activate([]byte) error
+	Check(*Policy) error
 }
 
 // Start installs capture last. Every failure closes the exclusive device handle
@@ -61,7 +64,7 @@ type redirectQuery func(net.Conn) ([]byte, []byte, error)
 
 func start(ctx context.Context, p *Policy, d driver, query redirectQuery, route RouteFunc, report func(error)) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Server{device: d, cancel: cancel, connections: make(map[net.Conn]struct{})}
+	s := &Server{device: d, policy: p, cancel: cancel, connections: make(map[net.Conn]struct{})}
 	ok := false
 	defer func() {
 		if !ok {
@@ -90,6 +93,9 @@ func start(ctx context.Context, p *Policy, d driver, query redirectQuery, route 
 	if err := d.Activate(data); err != nil {
 		return nil, err
 	}
+	if err := s.Check(); err != nil {
+		return nil, err
+	}
 	ok = true
 	return s, nil
 }
@@ -99,6 +105,11 @@ func (s *Server) accept(ctx context.Context, l net.Listener, p *Policy, query re
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			s.mu.Lock()
+			if !s.closed && s.failure == nil {
+				s.failure = fmt.Errorf("WFP TCP 入口失效: %w", err)
+			}
+			s.mu.Unlock()
 			return
 		}
 		s.mu.Lock()
@@ -130,6 +141,19 @@ func (s *Server) accept(ctx context.Context, l net.Listener, p *Policy, query re
 	}
 }
 
+func (s *Server) Check() error {
+	s.mu.Lock()
+	failure, closed := s.failure, s.closed
+	s.mu.Unlock()
+	if closed {
+		return net.ErrClosed
+	}
+	if failure != nil {
+		return failure
+	}
+	return s.device.Check(s.policy)
+}
+
 type trackedConn struct {
 	net.Conn
 	server *Server
@@ -140,6 +164,22 @@ func (c *trackedConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(func() { c.server.mu.Lock(); delete(c.server.connections, c); c.server.mu.Unlock() })
 	return err
+}
+
+// Preserve TCP half-close through the tracking wrapper: receiving EOF in one
+// direction must not discard the response still flowing in the other.
+func (c *trackedConn) CloseWrite() error {
+	if tcp, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return tcp.CloseWrite()
+	}
+	return errors.ErrUnsupported
+}
+
+func (c *trackedConn) CloseRead() error {
+	if tcp, ok := c.Conn.(interface{ CloseRead() error }); ok {
+		return tcp.CloseRead()
+	}
+	return errors.ErrUnsupported
 }
 
 func (s *Server) Close() error {

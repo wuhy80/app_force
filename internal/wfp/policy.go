@@ -15,12 +15,13 @@ import (
 
 const (
 	Magic          = 0x46575041 // APWF, little endian
-	Version        = 1
+	Version        = 2
 	MaxRules       = 64
 	MaxPath        = 1024 // UTF-16 code units, without a terminator
 	HeaderSize     = 48
 	RuleSize       = 16 + MaxPath*2
 	ContextSize    = 72 + MaxPath*2
+	HealthSize     = 40
 	SocketOutbound = "appforce-wfp-socket"
 )
 
@@ -29,6 +30,18 @@ type Rule struct {
 	Program model.Rule
 	AppID   string // canonical device path returned by FwpmGetAppIdFromFileName
 	Helpers bool
+}
+
+// CheckHealth binds the driver's answer to this particular installed policy,
+// rather than treating an open device handle as evidence of active filtering.
+func (p *Policy) CheckHealth(b []byte) error {
+	u32 := binary.LittleEndian.Uint32
+	if len(b) != HealthSize || u32(b) != Magic || u32(b[4:]) != Version || u32(b[8:]) != HealthSize ||
+		u32(b[12:]) != 1 || string(b[16:32]) != string(p.Cookie[:]) ||
+		u32(b[32:]) != uint32(len(p.Rules)) || u32(b[36:]) != 4 {
+		return fmt.Errorf("WFP 驱动规则状态无效、会话已失效或版本不兼容")
+	}
+	return nil
 }
 
 type Policy struct {

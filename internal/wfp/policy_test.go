@@ -126,3 +126,33 @@ func TestPolicyLimits(t *testing.T) {
 		t.Fatal("accepted too many rules")
 	}
 }
+
+func TestHealthRequiresCurrentPolicyAndAllFourFilters(t *testing.T) {
+	p := testPolicy(t)
+	valid := make([]byte, HealthSize)
+	put := binary.LittleEndian.PutUint32
+	put(valid, Magic)
+	put(valid[4:], Version)
+	put(valid[8:], HealthSize)
+	put(valid[12:], 1)
+	copy(valid[16:32], p.Cookie[:])
+	put(valid[32:], uint32(len(p.Rules)))
+	put(valid[36:], 4)
+	if err := p.CheckHealth(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func([]byte) []byte{
+		"truncated":      func(b []byte) []byte { return b[:16] },
+		"old driver":     func(b []byte) []byte { b[4]--; return b },
+		"inactive":       func(b []byte) []byte { b[12] = 0; return b },
+		"stale session":  func(b []byte) []byte { b[16] ^= 1; return b },
+		"wrong rules":    func(b []byte) []byte { b[32]++; return b },
+		"missing filter": func(b []byte) []byte { b[36]--; return b },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if p.CheckHealth(mutate(append([]byte(nil), valid...))) == nil {
+				t.Fatal("accepted unhealthy WFP session")
+			}
+		})
+	}
+}

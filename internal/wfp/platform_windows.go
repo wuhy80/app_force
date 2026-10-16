@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -23,6 +24,7 @@ const (
 	queryContext = 0x980000DD
 	setRecords   = 0x980000DE
 	setPolicy    = 0x0012A004 // FILE_DEVICE_NETWORK, function 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS
+	getHealth    = 0x00126008 // function 0x802, METHOD_BUFFERED, FILE_READ_ACCESS
 )
 
 func applicationID(path string) (string, error) {
@@ -46,7 +48,11 @@ func applicationID(path string) (string, error) {
 	return windows.UTF16ToString(chars), nil
 }
 
-type device struct{ handle windows.Handle }
+type device struct {
+	mu     sync.Mutex
+	handle windows.Handle
+	closed bool
+}
 
 func openDriver() (driver, error) {
 	p, _ := windows.UTF16PtrFromString(`\\.\AppForceWfp`)
@@ -54,11 +60,42 @@ func openDriver() (driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无法打开 AppForceWfp 驱动；请先安装并启动已签名的驱动，以管理员身份运行 AppForce（不会回退 TUN）: %w", err)
 	}
-	return &device{h}, nil
+	return &device{handle: h}, nil
 }
 
-func (d *device) Close() error { return windows.CloseHandle(d.handle) }
+func (d *device) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	return windows.CloseHandle(d.handle)
+}
+
+func (d *device) Check(p *Policy) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return net.ErrClosed
+	}
+	var returned uint32
+	b := make([]byte, HealthSize)
+	if err := windows.DeviceIoControl(d.handle, getHealth, nil, 0, &b[0], uint32(len(b)), &returned, nil); err != nil {
+		return fmt.Errorf("检查 WFP 动态规则失败: %w", err)
+	}
+	if returned != HealthSize {
+		return fmt.Errorf("WFP 驱动状态长度或版本不兼容")
+	}
+	return p.CheckHealth(b)
+}
+
 func (d *device) Activate(b []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return net.ErrClosed
+	}
 	var returned uint32
 	if err := windows.DeviceIoControl(d.handle, setPolicy, &b[0], uint32(len(b)), nil, 0, &returned, nil); err != nil {
 		return fmt.Errorf("启用 WFP 规则失败，检查驱动版本和 BFE 服务: %w", err)

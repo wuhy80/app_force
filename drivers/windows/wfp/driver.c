@@ -25,6 +25,7 @@ static const GUID* const Layers[] = {
 typedef struct _AF_STATE { EX_RUNDOWN_REF rundown; AF_POLICY policy; } AF_STATE;
 static PDEVICE_OBJECT Device;
 static UINT32 CalloutIDs[4];
+static UINT64 FilterIDs[4];
 static HANDLE RedirectHandle, Engine;
 static KSPIN_LOCK StateLock;
 static KMUTEX ControlLock;
@@ -54,6 +55,7 @@ static void StopPolicy(void) {
     State = NULL;
     KeReleaseSpinLock(&StateLock, irql);
     if (Engine) { FwpmEngineClose0(Engine); Engine = NULL; }
+    RtlZeroMemory(FilterIDs, sizeof(FilterIDs));
     if (state) {
         ExWaitForRundownProtectionRelease(&state->rundown);
         ExFreePoolWithTag(state, AF_TAG);
@@ -158,6 +160,37 @@ static NTSTATUS NTAPI Notify(FWPS_CALLOUT_NOTIFY_TYPE type, const GUID* key, FWP
     return STATUS_SUCCESS;
 }
 
+// Do not report an in-memory policy as healthy after BFE has discarded the
+// dynamic session. Query each installed filter through that exact session.
+// ControlLock serializes these PASSIVE_LEVEL operations with cleanup/install.
+static NTSTATUS CheckPolicy(AF_HEALTH* health) {
+    UINT32 i;
+    if (!State || !Engine) return STATUS_INVALID_DEVICE_STATE;
+    for (i = 0; i < RTL_NUMBER_OF(FilterIDs); ++i) {
+        FWPM_FILTER0* filter = NULL;
+        BOOLEAN valid;
+        NTSTATUS status = FwpmFilterGetById0(Engine, FilterIDs[i], &filter);
+        if (!NT_SUCCESS(status)) return status;
+        valid = filter && RtlEqualMemory(&filter->layerKey, Layers[i], sizeof(GUID)) &&
+            RtlEqualMemory(&filter->subLayerKey, &AF_SUBLAYER, sizeof(GUID)) &&
+            filter->action.type == FWP_ACTION_CALLOUT_UNKNOWN &&
+            RtlEqualMemory(&filter->action.calloutKey, Callouts[i], sizeof(GUID)) &&
+            filter->numFilterConditions == 1 && filter->filterCondition &&
+            RtlEqualMemory(&filter->filterCondition[0].fieldKey, &FWPM_CONDITION_IP_PROTOCOL, sizeof(GUID)) &&
+            filter->filterCondition[0].matchType == FWP_MATCH_EQUAL &&
+            filter->filterCondition[0].conditionValue.type == FWP_UINT8 &&
+            filter->filterCondition[0].conditionValue.uint8 == (i < 2 ? IPPROTO_TCP : IPPROTO_UDP);
+        if (filter) FwpmFreeMemory0((void**)&filter);
+        if (!valid) return STATUS_INVALID_DEVICE_STATE;
+    }
+    RtlZeroMemory(health, sizeof(*health));
+    health->magic = AF_MAGIC; health->version = AF_VERSION; health->size = sizeof(*health);
+    health->active = 1; health->ruleCount = State->policy.count;
+    health->filterCount = RTL_NUMBER_OF(FilterIDs);
+    RtlCopyMemory(health->cookie, State->policy.cookie, sizeof(health->cookie));
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS InstallPolicy(const void* input, ULONG length, PIRP irp) {
     const AF_POLICY* policy = input;
     AF_STATE* state;
@@ -213,7 +246,7 @@ static NTSTATUS InstallPolicy(const void* input, ULONG length, PIRP irp) {
         filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
         filter.action.calloutKey = *Callouts[i]; filter.weight.type = FWP_EMPTY;
         filter.numFilterConditions = 1; filter.filterCondition = &protocol;
-        status = FwpmFilterAdd0(Engine, &filter, NULL, NULL);
+        status = FwpmFilterAdd0(Engine, &filter, NULL, &FilterIDs[i]);
         if (!NT_SUCCESS(status)) goto Abort;
     }
     // Publish before committing so no installed filter can see an empty state.
@@ -225,6 +258,7 @@ Abort:
     FwpmTransactionAbort0(Engine);
 Fail:
     if (Engine) { FwpmEngineClose0(Engine); Engine = NULL; }
+    RtlZeroMemory(FilterIDs, sizeof(FilterIDs));
     ExFreePoolWithTag(state, AF_TAG);
     return status;
 }
@@ -232,6 +266,7 @@ Fail:
 NTSTATUS Dispatch(PDEVICE_OBJECT device, PIRP irp) {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG_PTR information = 0;
     UNREFERENCED_PARAMETER(device);
     KeWaitForSingleObject(&ControlLock, Executive, KernelMode, FALSE, NULL);
     switch (stack->MajorFunction) {
@@ -239,13 +274,21 @@ NTSTATUS Dispatch(PDEVICE_OBJECT device, PIRP irp) {
     case IRP_MJ_CLOSE: break;
     case IRP_MJ_CLEANUP: StopPolicy(); break;
     case IRP_MJ_DEVICE_CONTROL:
-        if (stack->Parameters.DeviceIoControl.IoControlCode != IOCTL_AF_POLICY) status = STATUS_INVALID_DEVICE_REQUEST;
-        else status = InstallPolicy(irp->AssociatedIrp.SystemBuffer, stack->Parameters.DeviceIoControl.InputBufferLength, irp);
+        if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_AF_POLICY) {
+            status = InstallPolicy(irp->AssociatedIrp.SystemBuffer, stack->Parameters.DeviceIoControl.InputBufferLength, irp);
+        } else if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_AF_HEALTH) {
+            if (stack->Parameters.DeviceIoControl.InputBufferLength != 0 ||
+                stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(AF_HEALTH)) status = STATUS_INVALID_PARAMETER;
+            else {
+                status = CheckPolicy((AF_HEALTH*)irp->AssociatedIrp.SystemBuffer);
+                if (NT_SUCCESS(status)) information = sizeof(AF_HEALTH);
+            }
+        } else status = STATUS_INVALID_DEVICE_REQUEST;
         break;
     default: status = STATUS_INVALID_DEVICE_REQUEST;
     }
     KeReleaseMutex(&ControlLock, FALSE);
-    irp->IoStatus.Status = status; irp->IoStatus.Information = 0;
+    irp->IoStatus.Status = status; irp->IoStatus.Information = information;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return status;
 }

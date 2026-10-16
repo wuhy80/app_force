@@ -88,7 +88,12 @@ type Engine struct {
 	tracker         *traffic.Tracker
 	samplingStop    chan struct{}
 	samplingDone    chan struct{}
-	wfp             *wfp.Server
+	wfp             wfpSession
+}
+
+type wfpSession interface {
+	Check() error
+	Close() error
 }
 
 func (e *Engine) Start(c model.Config) error {
@@ -119,9 +124,13 @@ func (e *Engine) Start(c model.Config) error {
 		}
 		err = instance.Start()
 		if err == nil && c.Settings.Mode == "wfp" {
-			e.wfp, err = wfp.Start(ctx, c.Rules, routeWFP(instance.Router()), func(err error) {
+			var capture *wfp.Server
+			capture, err = wfp.Start(ctx, c.Rules, routeWFP(instance.Router()), func(err error) {
 				e.Logs.WriteMessage(log.LevelWarn, err.Error())
 			})
+			if err == nil {
+				e.wfp = capture
+			}
 		}
 	}
 	if err != nil {
@@ -159,6 +168,14 @@ func (e *Engine) Start(c model.Config) error {
 	}
 	now := time.Now()
 	e.status = Status{Running: true, Mode: c.Settings.Mode, StartedAt: &now}
+	if e.wfp != nil {
+		capture := e.wfp
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			e.watchWFP(ctx, capture, ticker.C)
+		}()
+	}
 	if e.Recorder != nil {
 		e.samplingStop, e.samplingDone = make(chan struct{}), make(chan struct{})
 		go e.sampleTraffic(e.samplingStop, e.samplingDone)
@@ -169,6 +186,10 @@ func (e *Engine) Start(c model.Config) error {
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.stopLocked()
+}
+
+func (e *Engine) stopLocked() error {
 	var captureErr error
 	if e.wfp != nil {
 		captureErr = e.wfp.Close()
@@ -208,6 +229,30 @@ func (e *Engine) Stop() error {
 		e.status.Error = err.Error()
 	}
 	return err
+}
+
+func (e *Engine) watchWFP(ctx context.Context, capture wfpSession, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ticks:
+			if !ok || ctx.Err() != nil {
+				return
+			}
+			if err := capture.Check(); err != nil {
+				e.mu.Lock()
+				// A delayed result from the old session must not stop a replacement.
+				if e.wfp == capture {
+					stopErr := e.stopLocked()
+					e.status = Status{Mode: "wfp", Error: fmt.Sprintf("WFP 接管失效，代理已停止；系统路径可能已恢复，请修复后手动重启代理: %v", errors.Join(err, stopErr))}
+					e.Logs.WriteMessage(log.LevelError, e.status.Error)
+				}
+				e.mu.Unlock()
+				return
+			}
+		}
+	}
 }
 
 func (e *Engine) flushTraffic() {
