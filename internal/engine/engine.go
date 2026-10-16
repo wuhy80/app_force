@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 
 	"appforce/internal/model"
 	"appforce/internal/traffic"
+	"appforce/internal/wfp"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/common/urltest"
@@ -86,6 +88,7 @@ type Engine struct {
 	tracker         *traffic.Tracker
 	samplingStop    chan struct{}
 	samplingDone    chan struct{}
+	wfp             *wfp.Server
 }
 
 func (e *Engine) Start(c model.Config) error {
@@ -115,8 +118,17 @@ func (e *Engine) Start(c model.Config) error {
 			instance.Router().AppendTracker(e.tracker)
 		}
 		err = instance.Start()
+		if err == nil && c.Settings.Mode == "wfp" {
+			e.wfp, err = wfp.Start(ctx, c.Rules, routeWFP(instance.Router()), func(err error) {
+				e.Logs.WriteMessage(log.LevelWarn, err.Error())
+			})
+		}
 	}
 	if err != nil {
+		if e.wfp != nil {
+			_ = e.wfp.Close()
+			e.wfp = nil
+		}
 		if instance != nil {
 			_ = instance.Close()
 		}
@@ -128,6 +140,9 @@ func (e *Engine) Start(c model.Config) error {
 		}
 		e.status.Error = fmt.Sprintf("代理启动失败: %v", err)
 		return fmt.Errorf("%s", e.status.Error)
+	}
+	if c.Settings.Mode == "wfp" {
+		e.Logs.WriteMessage(log.LevelInfo, "WFP TCP 原型已启动：IPv4/IPv6；所选程序的公网 UDP 已阻断，DNS/局域网保留系统路径")
 	}
 	e.instance, e.cancel = instance, cancel
 	e.traffic = service.PtrFromContext[trafficcontrol.Manager](ctx)
@@ -154,6 +169,11 @@ func (e *Engine) Start(c model.Config) error {
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var captureErr error
+	if e.wfp != nil {
+		captureErr = e.wfp.Close()
+		e.wfp = nil
+	}
 	for connection := range e.nodeConnections {
 		_ = connection.Close()
 	}
@@ -163,7 +183,7 @@ func (e *Engine) Stop() error {
 		if e.Recorder != nil {
 			e.flushTraffic()
 		}
-		return nil
+		return captureErr
 	}
 	if e.samplingStop != nil {
 		close(e.samplingStop)
@@ -174,6 +194,7 @@ func (e *Engine) Stop() error {
 	if isAlreadyClosedError(err) {
 		err = nil
 	}
+	err = errors.Join(err, captureErr)
 	e.cancel()
 	e.instance, e.traffic, e.cancel = nil, nil, nil
 	e.nodesByOutbound = nil

@@ -178,8 +178,11 @@ func (s Settings) EffectiveTUNStack() string {
 }
 
 func (s Settings) Validate() error {
-	if s.Mode != "tun" && s.Mode != "mixed" {
-		return fmt.Errorf("代理模式必须是 tun 或 mixed")
+	if s.Mode != "tun" && s.Mode != "mixed" && s.Mode != "wfp" {
+		return fmt.Errorf("代理模式必须是 tun、mixed 或 wfp")
+	}
+	if s.Mode == "wfp" && s.DNSMode != "system" {
+		return fmt.Errorf("WFP TCP 原型仅支持保留系统 DNS")
 	}
 	switch s.EffectiveTUNStack() {
 	case "gvisor", "mixed", "system":

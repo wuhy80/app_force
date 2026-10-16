@@ -5,7 +5,7 @@ export interface Device { id: string; name: string; url: string; token?: string;
 export interface DeploymentRequest { name: string; host: string; port: number; username: string; password: string; sudo_password: string; management_port: number; host_fingerprint?: string }
 export interface DeploymentCheck { os: string; arch: string; hostname: string; root: boolean; host_fingerprint: string; bundled: boolean }
 export interface DeploymentJob { id: string; name: string; host: string; status: 'running' | 'succeeded' | 'failed'; stage: string; progress: number; error: string; device_id: string; started_at: string }
-export interface Settings { mode: 'tun' | 'mixed'; tun_stack: 'gvisor' | 'mixed' | 'system'; mixed_port: number; dns_mode: 'system' | 'direct' | 'proxy'; dns_address: string; strict_route: boolean; auto_redirect: boolean }
+export interface Settings { mode: 'tun' | 'mixed' | 'wfp'; tun_stack: 'gvisor' | 'mixed' | 'system'; mixed_port: number; dns_mode: 'system' | 'direct' | 'proxy'; dns_address: string; strict_route: boolean; auto_redirect: boolean }
 export interface Connection { id: string; network: string; destination: string; process_path: string; pid: number; proxied: boolean; outbound: string; node?: Node; upload: number; download: number }
 export interface State {
   version: string; hostname: string; os: string; nodes: Node[]; sources: Source[]; rules: Rule[]; devices: Device[];

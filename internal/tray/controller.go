@@ -48,6 +48,9 @@ func (v View) NodeText() string {
 }
 
 func (v View) ModeText() string {
+	if v.Mode == "wfp" {
+		return fmt.Sprintf("WFP TCP 原型 · %d 个启用规则", v.Rules)
+	}
 	if v.Mode == "mixed" {
 		return "本地 SOCKS / HTTP"
 	}

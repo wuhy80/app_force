@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"appforce/internal/model"
+	"appforce/internal/wfp"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
@@ -16,7 +17,10 @@ import (
 )
 
 func newContext() context.Context {
-	return include.Context(service.ContextWithDefaultRegistry(context.Background()))
+	registry := include.OutboundRegistry()
+	registerWFPSocket(registry)
+	return box.Context(service.ContextWithDefaultRegistry(context.Background()), include.InboundRegistry(), registry,
+		include.EndpointRegistry(), include.DNSTransportRegistry(), include.ServiceRegistry(), include.CertificateProviderRegistry())
 }
 
 func Build(c model.Config) ([]byte, error) {
@@ -26,6 +30,9 @@ func Build(c model.Config) ([]byte, error) {
 func buildForPlatform(c model.Config, goos string) ([]byte, error) {
 	if err := c.Settings.Validate(); err != nil {
 		return nil, err
+	}
+	if c.Settings.Mode == "wfp" && goos != "windows" {
+		return nil, fmt.Errorf("WFP 模式仅支持 Windows")
 	}
 	nodes, err := outboundNodes(c)
 	if err != nil {
@@ -38,11 +45,37 @@ func buildForPlatform(c model.Config, goos string) ([]byte, error) {
 			return nil, err
 		}
 		outbound["tag"] = nodeTag(c, node.ID)
+		if c.Settings.Mode == "wfp" {
+			if err := prepareWFPNode(outbound); err != nil {
+				return nil, fmt.Errorf("节点 %s: %w", node.Name, err)
+			}
+		}
 		outbounds = append(outbounds, outbound)
+	}
+	if c.Settings.Mode == "wfp" {
+		outbounds = append(outbounds, map[string]any{"type": wfp.SocketOutbound, "tag": wfp.SocketOutbound})
 	}
 	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
 	inbounds := []any{map[string]any{"type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": c.Settings.MixedPort}}
 	rules := []any{map[string]any{"inbound": []string{"local"}, "action": "route", "outbound": "selected"}}
+	if c.Settings.Mode == "wfp" {
+		var id uint32
+		for _, rule := range c.Rules {
+			if !rule.Enabled {
+				continue
+			}
+			id++
+			rules = append(rules, map[string]any{"inbound": []string{wfpInbound(id)}, "action": "route", "outbound": nodeTag(c, rule.NodeID)})
+		}
+		if id == 0 {
+			return nil, fmt.Errorf("请先添加并启用至少一个程序规则")
+		}
+		if id > wfp.MaxRules {
+			return nil, fmt.Errorf("WFP 原型最多支持 %d 个启用的程序", wfp.MaxRules)
+		}
+		// Never let an unexpected transparent inbound use the direct final route.
+		rules = append(rules, map[string]any{"action": "reject"})
+	}
 	if c.Settings.Mode == "tun" {
 		enabled := 0
 		for _, rule := range c.Rules {
@@ -138,7 +171,7 @@ func buildForPlatform(c model.Config, goos string) ([]byte, error) {
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"route": map[string]any{
-			"auto_detect_interface": true, "find_process": c.Settings.Mode == "tun",
+			"auto_detect_interface": c.Settings.Mode != "wfp", "find_process": c.Settings.Mode == "tun",
 			"default_domain_resolver": "bootstrap", "rules": rules, "final": "direct",
 		},
 	}
@@ -163,7 +196,7 @@ func outboundNodes(c model.Config) ([]model.Node, error) {
 	for _, rule := range c.Rules {
 		// Account authorization also needs Antigravity's explicit node when
 		// only the local mixed proxy is running.
-		if !rule.Enabled || (c.Settings.Mode != "tun" && !model.IsAntigravityProgram(rule.Path)) || rule.NodeID == "" || seen[rule.NodeID] {
+		if !rule.Enabled || (c.Settings.Mode == "mixed" && !model.IsAntigravityProgram(rule.Path)) || rule.NodeID == "" || seen[rule.NodeID] {
 			continue
 		}
 		node, ok := c.Node(rule.NodeID)
@@ -178,6 +211,31 @@ func outboundNodes(c model.Config) ([]model.Node, error) {
 		seen[node.ID] = true
 	}
 	return nodes, nil
+}
+
+// Shared upstream sockets cannot carry one independent redirect record per
+// original connection. Keep the prototype to protocols with a TCP socket per
+// connection and reject unsupported configurations before installing capture.
+func prepareWFPNode(node map[string]any) error {
+	switch node["type"] {
+	case "socks", "http", "shadowsocks", "vmess", "vless", "trojan":
+	default:
+		return fmt.Errorf("WFP TCP 原型暂不支持此协议，请选择 TCP 节点或手动使用 TUN")
+	}
+	if m, ok := node["multiplex"].(map[string]any); ok && m["enabled"] == true {
+		return fmt.Errorf("WFP TCP 原型暂不支持多路复用，请关闭 multiplex")
+	}
+	if t, ok := node["transport"].(map[string]any); ok && t["type"] != "ws" {
+		return fmt.Errorf("WFP TCP 原型的传输仅支持原生 TCP 和 WebSocket")
+	}
+	if plugin, _ := node["plugin"].(string); plugin != "" {
+		return fmt.Errorf("WFP TCP 原型暂不支持 Shadowsocks 插件")
+	}
+	if node["tcp_fast_open"] == true {
+		return fmt.Errorf("WFP TCP 原型暂不支持 TCP Fast Open")
+	}
+	node["detour"] = wfp.SocketOutbound
+	return nil
 }
 
 func programMatch(rule model.Rule) map[string]any {

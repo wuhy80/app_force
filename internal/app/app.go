@@ -112,6 +112,9 @@ func (a *App) applyLocked(next model.Config) error {
 			return fmt.Errorf("停止旧配置失败: %w", err)
 		}
 		if err := a.Engine.Start(next); err != nil {
+			if avoidTUNRestore(next, a.config) {
+				return fmt.Errorf("WFP 启动失败，代理已停止；旧配置仍保留，未重新启用 TUN: %w", err)
+			}
 			restoreErr := a.Engine.Start(a.config)
 			if restoreErr != nil {
 				return fmt.Errorf("新配置失败: %v；旧配置恢复失败: %v", err, restoreErr)
@@ -122,6 +125,9 @@ func (a *App) applyLocked(next model.Config) error {
 	if err := a.store.Save(next); err != nil {
 		if running {
 			_ = a.Engine.Stop()
+			if avoidTUNRestore(next, a.config) {
+				return fmt.Errorf("保存失败，代理已停止；旧配置仍保留，未重新启用 TUN: %w", err)
+			}
 			if restoreErr := a.Engine.Start(a.config); restoreErr != nil {
 				return fmt.Errorf("保存失败: %v；恢复失败: %v", err, restoreErr)
 			}
@@ -130,6 +136,10 @@ func (a *App) applyLocked(next model.Config) error {
 	}
 	a.config = next
 	return nil
+}
+
+func avoidTUNRestore(next, previous model.Config) bool {
+	return next.Settings.Mode == "wfp" && previous.Settings.Mode == "tun"
 }
 
 func (a *App) Start() error { a.mu.Lock(); defer a.mu.Unlock(); return a.Engine.Start(a.config) }
@@ -147,6 +157,9 @@ func (a *App) SelectNode(id string) error {
 }
 
 func (a *App) SetSettings(settings model.Settings) error {
+	if settings.Mode == "wfp" && runtime.GOOS != "windows" {
+		return fmt.Errorf("WFP 模式仅支持 Windows")
+	}
 	settings.TUNStack = settings.EffectiveTUNStack()
 	if err := settings.Validate(); err != nil {
 		return err

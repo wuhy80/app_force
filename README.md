@@ -4,6 +4,8 @@
 
 这是首版实现。sing-box 通过 `box.New()` 直接嵌入；界面静态资源通过 `go:embed` 打包。运行时不下载或启动外部 sing-box。Windows 使用 sing-tun 内嵌的 Wintun，无需在可执行文件旁放置 DLL。
 
+Windows 另提供可选的 **WFP TCP 实验原型**：按连接筛选程序，让未选程序的数据保留系统路径。需单独构建、签名并安装驱动，目前尚未通过 WDK 构建与 Windows 实机验收；公网 UDP/QUIC 暂时阻断，不替代默认 TUN。自用可用本地测试证书验证，条件及步骤见 [WFP 原型说明](docs/windows-wfp.md)。
+
 ## 已实现
 
 - 订阅 URL 下载、手动粘贴、更新和删除。
