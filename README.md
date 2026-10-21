@@ -1,4 +1,6 @@
 # AppForce
+[![Release 构建](https://github.com/wuhy80/app_force/actions/workflows/release-windows.yml/badge.svg)](https://github.com/wuhy80/app_force/actions/workflows/release-windows.yml)
+[![最新版本](https://img.shields.io/github/v/release/wuhy80/app_force?color=0969da)](https://github.com/wuhy80/app_force/releases/latest)
 
 一个应用，内置 sing-box，按程序路径选择需要代理的应用。Windows 使用原生桌面窗口，Linux/macOS 可使用同一程序提供的网页界面，也可由 Windows 统一管理。
 
